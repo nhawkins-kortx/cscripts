@@ -9,6 +9,7 @@ function git(args: string[]): Git {
   return { code: r.status ?? 1, stdout: (r.stdout ?? "").trim(), stderr: (r.stderr ?? "").trim() };
 }
 
+
 function gitInherit(args: string[]): number {
   return spawnSync("git", args, { stdio: "inherit" }).status ?? 1;
 }
@@ -88,6 +89,80 @@ function pushBranch(branch: string): boolean {
 }
 
 type Step = { branch: string; args: string[]; display: string };
+type Plan = { used: string[]; steps: Step[] };
+type Result = { ok: boolean; index: number };
+
+function isAncestor(ancestor: string, descendant: string): boolean {
+  return git(["merge-base", "--is-ancestor", ancestor, descendant]).code === 0;
+}
+
+function planSteps(target: string, chain: string[], oldTip: Record<string, string>, merged: string | null): Plan {
+  const cutTip = merged ? git(["rev-parse", merged]).stdout : null;
+  const used = merged ? chain.filter((b) => b !== merged && isAncestor(merged, b)) : chain;
+
+  const steps = used.map((branch, i) => {
+    if (i === 0) {
+      const onto = cutTip
+        ? { args: ["--onto", target, cutTip], display: `--onto ${target} ${cutTip.slice(0, 9)}` }
+        : { args: [target], display: `${target}` };
+
+      return {
+        branch,
+        args: ["rebase", "--autostash", ...onto.args, branch],
+        display: `git rebase --autostash ${onto.display} ${branch}`,
+      };
+    }
+    const parent = used[i - 1];
+    const cut = oldTip[parent];
+
+    return {
+      branch,
+      args: ["rebase", "--autostash", "--onto", parent, cut, branch],
+      display: `git rebase --autostash --onto ${parent} ${cut.slice(0, 9)} ${branch}`,
+    };
+  });
+
+  return { used, steps };
+}
+
+function confirmPlan(target: string, plan: Plan, yes: boolean): boolean {
+  console.log(`\nStack (bottom → top): ${plan.used.join(" → ")}`);
+  console.log(`Restacking onto ${target}:\n`);
+  plan.steps.forEach((s, i) => console.log(`  ${i + 1}) ${s.display}`));
+
+  return yes || (prompt("\nProceed? y/[N]:") ?? "").trim().toLowerCase() === "y";
+}
+
+function runSteps(steps: Step[]): Result {
+  for (const [i, step] of steps.entries()) {
+    console.log(`\n[${i + 1}/${steps.length}] ${step.branch}`);
+    if (gitInherit(step.args) !== 0) return { ok: false, index: i };
+  }
+
+  return { ok: true, index: -1 };
+}
+
+function manualGuidance(branch: string, steps: Step[], failedIndex: number): string {
+  const remaining = steps.slice(failedIndex + 1).map((s) => `  ${s.display}`).join("\n");
+
+  return (
+    `\nRestack stopped at ${branch} (conflict). Resolve, 'git add', then 'git rebase --continue'.` +
+    (remaining ? `\nThen finish the remaining branches:\n${remaining}` : "") +
+    `\nOr 'git rebase --abort' to back out this branch.`
+  );
+}
+
+function finish(plan: Plan, oldTip: Record<string, string>, push: boolean): void {
+  console.log("\nDone. To undo:");
+  for (const b of plan.used) console.log(`  git branch -f ${b} ${oldTip[b].slice(0, 9)}`);
+
+  if (push) {
+    console.log("\nPushing with --force-with-lease...");
+    for (const b of plan.used) {
+      if (!pushBranch(b)) fail(`Push failed for ${b}.`);
+    }
+  }
+}
 
 function run(args: string[]): void {
   const { target, push, yes } = parseArgs(args);
@@ -104,55 +179,54 @@ function run(args: string[]): void {
   const oldTip: Record<string, string> = {};
   for (const b of chain) oldTip[b] = git(["rev-parse", b]).stdout;
 
-  const steps: Step[] = chain.map((branch, i) => {
-    if (i === 0) {
-      return {
-        branch,
-        args: ["rebase", "--autostash", target, branch],
-        display: `git rebase --autostash ${target} ${branch}`,
-      };
-    }
-    const parent = chain[i - 1];
-    const cut = oldTip[parent];
-
-    return {
-      branch,
-      args: ["rebase", "--autostash", "--onto", parent, cut, branch],
-      display: `git rebase --autostash --onto ${parent} ${cut.slice(0, 9)} ${branch}`,
-    };
-  });
-
-  console.log(`\nInferred stack (bottom → top): ${chain.join(" → ")}`);
-  console.log(`Restacking onto ${target}:\n`);
-  steps.forEach((s, i) => console.log(`  ${i + 1}) ${s.display}`));
-
-  if (!yes && (prompt("\nProceed? y/[N]:") ?? "").trim().toLowerCase() !== "y") {
+  let plan = planSteps(target, chain, oldTip, null);
+  if (!confirmPlan(target, plan, yes)) {
     console.log("Aborted.");
 
     return;
   }
 
-  for (const [i, step] of steps.entries()) {
-    console.log(`\n[${i + 1}/${steps.length}] ${step.branch}`);
-    if (gitInherit(step.args) !== 0) {
-      const remaining = steps.slice(i + 1).map((s) => `  ${s.display}`).join("\n");
-      fail(
-        `\nRestack stopped at ${step.branch} (conflict). Resolve, 'git add', then 'git rebase --continue'.` +
-          (remaining ? `\nThen finish the remaining branches:\n${remaining}` : "") +
-          `\nOr 'git rebase --abort' to back out this branch.`,
-      );
+  let result = runSteps(plan.steps);
+
+  if (!result.ok) {
+    const stalled = plan.steps[result.index].branch;
+    const merged = (
+      prompt(
+        `\nRestack stopped at ${stalled} (conflict).` +
+          `\nIf a dependency was squash-merged, enter that branch to cut at its tip and retry;` +
+          `\nleave blank to resolve manually: `,
+      ) ?? ""
+    ).trim();
+
+    if (merged === "") fail(manualGuidance(stalled, plan.steps, result.index));
+    if (!verify(merged)) fail(`Ref not found: ${merged}.${manualGuidance(stalled, plan.steps, result.index)}`);
+
+    gitInherit(["rebase", "--abort"]);
+    for (let j = 0; j < result.index; j++) git(["branch", "-f", plan.steps[j].branch, oldTip[plan.steps[j].branch]]);
+
+    plan = planSteps(target, chain, oldTip, merged);
+    if (plan.used.length === 0) {
+      git(["checkout", top]);
+      fail(`Nothing above ${merged} to restack.`);
+    }
+    if (!confirmPlan(target, plan, yes)) {
+      git(["checkout", top]);
+      console.log("Aborted.");
+
+      return;
+    }
+
+    result = runSteps(plan.steps);
+    if (!result.ok) {
+      const again = plan.steps[result.index].branch;
+      gitInherit(["rebase", "--abort"]);
+      for (let j = 0; j < result.index; j++) git(["branch", "-f", plan.steps[j].branch, oldTip[plan.steps[j].branch]]);
+      git(["checkout", top]);
+      fail(`Retry also stopped at ${again} — likely a genuine conflict, not a stale dependency. Resolve manually.`);
     }
   }
 
-  console.log("\nDone. To undo:");
-  for (const b of chain) console.log(`  git branch -f ${b} ${oldTip[b].slice(0, 9)}`);
-
-  if (push) {
-    console.log("\nPushing chain with --force-with-lease...");
-    for (const b of chain) {
-      if (!pushBranch(b)) fail(`Push failed for ${b}.`);
-    }
-  }
+  finish(plan, oldTip, push);
 }
 
 const script: CScriptScript = {
@@ -177,8 +251,14 @@ If <target> is a remote ref (e.g. origin/master), that remote is fetched
 first. A dirty working tree is auto-stashed.
 
 The inferred chain and rebase sequence are printed for confirmation (skip with
--y). On a conflict the restack stops and prints how to finish the current
-branch plus the exact commands for the remaining ones.
+-y).
+
+Squash-merged deps: if a dependency was squash-merged into <target>, its
+commits live on under the stack with a new SHA, so topology can't tell they're
+already merged and the rebase conflicts replaying them. On any conflict you're
+prompted for the merged branch — enter it to cut at its tip and cleanly restack
+everything above it (the rebase is aborted and retried). Leave it blank to stop
+and resolve manually (the conflict is left in place with the usual git hints).
 
 Limitations: assumes a linear stack — one branch per commit tip and no merge
 commits in <target>..HEAD. Ambiguous topology fails with a clear message.
