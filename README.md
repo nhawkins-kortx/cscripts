@@ -35,3 +35,17 @@ automatically — nothing else to wire up.
 PATH pointing at `cscript.ts`:
 
     ln -s ~/Git/scripts/cscript.ts ~/.local/bin/cscript
+
+## Tab-completion (zsh)
+
+`completions/_cscript` completes subcommands, flags, and script names
+(`cscript <Tab>` lists every script, `cscript <name> <Tab>` offers help
+flags). It reads `scripts/` live, so new scripts complete automatically.
+
+Add the completions dir to `fpath` **before** `compinit` runs in `~/.zshrc`:
+
+    fpath=("$HOME/Git/scripts/completions" $fpath)
+    autoload -Uz compinit && compinit
+
+Then open a new shell (or `exec zsh`). The `scripts_dir` path inside
+`_cscript` is hardcoded to this repo's location — update it if the repo moves.
