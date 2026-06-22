@@ -31,10 +31,17 @@ automatically — nothing else to wire up.
 
 ## Install
 
-`cscript` runs on [Bun](https://bun.sh). The single shim is a symlink on your
-PATH pointing at `cscript.ts`:
+Cloning the repo isn't enough on its own — these one-time steps wire it up:
 
-    ln -s ~/Git/scripts/cscript.ts ~/.local/bin/cscript
+1. Install [Bun](https://bun.sh) (the runtime `cscript` runs on).
+2. Clone to **`~/Git/scripts`** exactly — the shim target and the completion's
+   `scripts_dir` both assume this path.
+3. Symlink the shim onto your PATH (`~/.local/bin` must be on `$PATH`):
+
+       ln -s ~/Git/scripts/cscript.ts ~/.local/bin/cscript
+
+4. (Optional) Wire up tab-completion — see below.
+5. Open a new shell, then `cscript list` to confirm.
 
 ## Tab-completion (zsh)
 
