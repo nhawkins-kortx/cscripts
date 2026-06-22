@@ -1,8 +1,7 @@
 #compdef cscript
 
 _cscript() {
-  # Hardcoded to the repo location; keep in sync if the repo ever moves.
-  local scripts_dir="$HOME/Git/scripts/scripts"
+  local scripts_dir=${CSCRIPT_SCRIPTS_DIR:-${${commands[cscript]}:A:h}/scripts}
   local -a names
   names=(${scripts_dir}/*.ts(N:t:r))
 

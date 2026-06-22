@@ -34,14 +34,19 @@ automatically — nothing else to wire up.
 Cloning the repo isn't enough on its own — these one-time steps wire it up:
 
 1. Install [Bun](https://bun.sh) (the runtime `cscript` runs on).
-2. Clone to **`~/Git/scripts`** exactly — the shim target and the completion's
-   `scripts_dir` both assume this path.
-3. Symlink the shim onto your PATH (`~/.local/bin` must be on `$PATH`):
+2. Clone anywhere, then symlink the shim onto your PATH (`~/.local/bin` must
+   be on `$PATH`); substitute your clone path:
 
-       ln -s ~/Git/scripts/cscript.ts ~/.local/bin/cscript
+       ln -s /path/to/scripts/cscript.ts ~/.local/bin/cscript
 
-4. (Optional) Wire up tab-completion — see below.
-5. Open a new shell, then `cscript list` to confirm.
+3. (Optional) Wire up tab-completion — see below.
+4. Open a new shell, then `cscript list` to confirm.
+
+Both `cscript` and its completion resolve the scripts directory from the
+installed shim's location, so any clone path works with no extra config. To
+point them at a different directory, set `CSCRIPT_SCRIPTS_DIR`:
+
+    export CSCRIPT_SCRIPTS_DIR="$HOME/my-scripts"
 
 ## Tab-completion (zsh)
 
@@ -54,5 +59,6 @@ Add the completions dir to `fpath` **before** `compinit` runs in `~/.zshrc`:
     fpath=("$HOME/Git/scripts/completions" $fpath)
     autoload -Uz compinit && compinit
 
-Then open a new shell (or `exec zsh`). The `scripts_dir` path inside
-`_cscript` is hardcoded to this repo's location — update it if the repo moves.
+Then open a new shell (or `exec zsh`). The completion resolves the scripts
+directory from the `cscript` shim (or `CSCRIPT_SCRIPTS_DIR` if set), so it
+needs no path configuration.

@@ -5,7 +5,8 @@ import type { CScriptScript } from "./types";
 
 const HELP_FLAGS = new Set(["help", "--help", "-h"]);
 
-const scriptsDir = join(dirname(realpathSync(import.meta.path)), "scripts");
+const scriptsDir =
+  process.env.CSCRIPT_SCRIPTS_DIR ?? join(dirname(realpathSync(import.meta.path)), "scripts");
 
 function scriptNames(): string[] {
   return readdirSync(scriptsDir)
