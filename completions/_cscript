@@ -1,0 +1,20 @@
+#compdef cscript
+
+_cscript() {
+  local scripts_dir="$HOME/Git/scripts/scripts"
+  local -a names
+  names=(${scripts_dir}/*.ts(N:t:r))
+
+  if (( CURRENT == 2 )); then
+    _alternative \
+      'commands:command:(list help --help -h)' \
+      "scripts:script:(${names})"
+    return
+  fi
+
+  if (( CURRENT == 3 )) && (( ${names[(Ie)$words[2]]} )); then
+    _values 'help' help --help -h
+  fi
+}
+
+_cscript "$@"
