@@ -60,30 +60,42 @@ function inferChain(target: string, top: string): string[] {
   return chain;
 }
 
-type Parsed = { target: string; push: boolean; yes: boolean };
+type Parsed = { target: string; yes: boolean };
 
 function parseArgs(args: string[]): Parsed {
-  let push = false;
   let yes = false;
   const positional: string[] = [];
   for (const a of args) {
-    if (a === "--push") push = true;
-    else if (a === "-y" || a === "--yes") yes = true;
+    if (a === "-y" || a === "--yes") yes = true;
     else positional.push(a);
   }
-  if (positional.length !== 1) fail("Usage: cscript restack <target> [--push] [-y]");
+  if (positional.length !== 1) fail("Usage: cscript restack <target> [-y]");
 
-  return { target: positional[0], push, yes };
+  return { target: positional[0], yes };
+}
+
+function upstreamOf(branch: string): string | null {
+  const r = git(["rev-parse", "--abbrev-ref", "--symbolic-full-name", `${branch}@{upstream}`]);
+
+  return r.code === 0 ? r.stdout : null;
+}
+
+function pushableBranches(branches: string[]): string[] {
+  return branches.filter((b) => {
+    const up = upstreamOf(b);
+
+    return up !== null && verify(up);
+  });
 }
 
 function pushBranch(branch: string): boolean {
-  const up = git(["rev-parse", "--abbrev-ref", "--symbolic-full-name", `${branch}@{upstream}`]);
-  if (up.code !== 0) {
+  const up = upstreamOf(branch);
+  if (up === null) {
     console.warn(`No upstream for ${branch}; skipping push.`);
 
     return true;
   }
-  const remote = up.stdout.split("/")[0];
+  const remote = up.split("/")[0];
 
   return gitInherit(["push", "--force-with-lease", remote, branch]) === 0;
 }
@@ -152,26 +164,36 @@ function manualGuidance(branch: string, steps: Step[], failedIndex: number): str
   );
 }
 
-function finish(plan: Plan, oldTip: Record<string, string>, push: boolean): void {
-  console.log("\nDone. To undo:");
-  for (const b of plan.used) console.log(`  git branch -f ${b} ${oldTip[b].slice(0, 9)}`);
-
-  if (push) {
-    console.log("\nPushing with --force-with-lease...");
-    for (const b of plan.used) {
-      if (!pushBranch(b)) fail(`Push failed for ${b}.`);
+function finish(plan: Plan, oldTip: Record<string, string>, yes: boolean): void {
+  const pushable = pushableBranches(plan.used);
+  if (pushable.length === 0) {
+    console.log("\nNo branches with live remotes to push.");
+  } else {
+    console.log("\nThese branches are on a remote:");
+    for (const b of pushable) console.log(`  ${b}`);
+    const go =
+      yes ||
+      (prompt(`\nPush ${pushable.length} branch(es) with --force-with-lease? y/[N]:`) ?? "").trim().toLowerCase() === "y";
+    if (go) {
+      console.log("\nPushing with --force-with-lease...");
+      for (const b of pushable) {
+        if (!pushBranch(b)) console.warn(`Push failed for ${b}; continuing.`);
+      }
     }
   }
+
+  console.log("\nDone. To undo:");
+  for (const b of plan.used) console.log(`  git branch -f ${b} ${oldTip[b].slice(0, 9)}`);
 }
 
 function run(args: string[]): void {
-  const { target, push, yes } = parseArgs(args);
+  const { target, yes } = parseArgs(args);
   const top = currentBranch();
 
   const remote = remoteForTarget(target);
   if (remote) {
     console.log(`Fetching ${remote}...`);
-    gitInherit(["fetch", remote]);
+    gitInherit(["fetch", "--prune", remote]);
   }
   if (!verify(target)) fail(`Target ref not found: ${target}`);
 
@@ -226,12 +248,12 @@ function run(args: string[]): void {
     }
   }
 
-  finish(plan, oldTip, push);
+  finish(plan, oldTip, yes);
 }
 
 const script: CScriptScript = {
   description: "Restack a whole stacked-PR chain onto a new base (current branch = top of stack).",
-  help: `Usage: cscript restack <target> [--push] [-y|--yes]
+  help: `Usage: cscript restack <target> [-y|--yes]
 
 Restacks the chain of stacked branches leading up to the current branch onto
 <target>, rebasing each branch bottom-up onto its parent's new tip.
@@ -253,6 +275,11 @@ first. A dirty working tree is auto-stashed.
 The inferred chain and rebase sequence are printed for confirmation (skip with
 -y).
 
+After a clean restack, any branch in the chain that lives on a remote (upstream
+configured and not [gone]) is listed and you're offered a single
+force-with-lease push of all of them. Branches whose remote was deleted are
+skipped so merged/closed PR branches aren't resurrected.
+
 Squash-merged deps: if a dependency was squash-merged into <target>, its
 commits live on under the stack with a new SHA, so topology can't tell they're
 already merged and the rebase conflicts replaying them. On any conflict you're
@@ -264,13 +291,12 @@ Limitations: assumes a linear stack — one branch per commit tip and no merge
 commits in <target>..HEAD. Ambiguous topology fails with a clear message.
 
 Options:
-  --push      After a clean restack, force-with-lease push every branch in the
-              chain to its upstream.
-  -y, --yes   Skip the confirmation prompt.
+  -y, --yes   Skip the confirmation prompt and auto-accept the push offer
+              (force-with-lease pushes every live-remote branch with no prompt).
 
 Examples:
   cscript restack origin/master
-  cscript restack origin/master --push`,
+  cscript restack origin/master -y`,
   run,
 };
 

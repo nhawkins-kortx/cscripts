@@ -38,15 +38,13 @@ function remoteForTarget(target: string): string | null {
   return remotes.includes(candidate) ? candidate : null;
 }
 
-type Parsed = { target: string; feature: string; count: number; base: string; push: boolean; yes: boolean };
+type Parsed = { target: string; feature: string; count: number; base: string; yes: boolean };
 
 function parseArgs(args: string[]): Parsed {
-  let push = false;
   let yes = false;
   const positional: string[] = [];
   for (const a of args) {
-    if (a === "--push") push = true;
-    else if (a === "-y" || a === "--yes") yes = true;
+    if (a === "-y" || a === "--yes") yes = true;
     else positional.push(a);
   }
 
@@ -59,7 +57,7 @@ function parseArgs(args: string[]): Parsed {
   } else if (positional.length === 3) {
     [target, feature, countArg] = positional;
   } else {
-    fail("Usage: cscript rebase-stack <target> [feature] <count> [--push] [-y]");
+    fail("Usage: cscript rebase-stack <target> [feature] <count> [-y]");
   }
 
   const count = Number(countArg.replace(/^~/, ""));
@@ -67,7 +65,31 @@ function parseArgs(args: string[]): Parsed {
     fail(`Invalid count: '${countArg}' (expected a positive integer, optionally prefixed with '~').`);
   }
 
-  return { target, feature, count, base: `${feature}~${count}`, push, yes };
+  return { target, feature, count, base: `${feature}~${count}`, yes };
+}
+
+function upstreamOf(branch: string): string | null {
+  const r = git(["rev-parse", "--abbrev-ref", "--symbolic-full-name", `${branch}@{upstream}`]);
+
+  return r.code === 0 ? r.stdout : null;
+}
+
+function hasLiveRemote(branch: string): boolean {
+  const up = upstreamOf(branch);
+
+  return up !== null && verify(up);
+}
+
+function pushBranch(branch: string): boolean {
+  const up = upstreamOf(branch);
+  if (up === null) {
+    console.warn(`No upstream for ${branch}; skipping push.`);
+
+    return true;
+  }
+  const remote = up.split("/")[0];
+
+  return gitInherit(["push", "--force-with-lease", remote, branch]) === 0;
 }
 
 function bullets(oneline: string): string {
@@ -75,12 +97,12 @@ function bullets(oneline: string): string {
 }
 
 function run(args: string[]): void {
-  const { target, feature, count, base, push, yes } = parseArgs(args);
+  const { target, feature, count, base, yes } = parseArgs(args);
 
   const remote = remoteForTarget(target);
   if (remote) {
     console.log(`Fetching ${remote}...`);
-    gitInherit(["fetch", remote]);
+    gitInherit(["fetch", "--prune", remote]);
   }
 
   if (!verify(target)) fail(`Target ref not found: ${target}`);
@@ -113,14 +135,23 @@ function run(args: string[]): void {
     );
   }
 
-  console.log(`\nDone. To undo: git reset --hard ${originalSha}`);
+  if (hasLiveRemote(feature)) {
+    console.log(`\n${feature} is on a remote.`);
+    const go = yes || (prompt(`Push ${feature} with --force-with-lease? y/[N]:`) ?? "").trim().toLowerCase() === "y";
+    if (go) {
+      console.log("\nPushing with --force-with-lease...");
+      if (!pushBranch(feature)) console.warn(`Push failed for ${feature}; continuing.`);
+    }
+  } else {
+    console.log(`\n${feature} has no live remote to push.`);
+  }
 
-  if (push && gitInherit(["push", "--force-with-lease"]) !== 0) fail("Push failed.");
+  console.log(`\nDone. To undo: git reset --hard ${originalSha}`);
 }
 
 const script: CScriptScript = {
   description: "Rebase the top N commits of a branch onto a new base (stacked-PR restack).",
-  help: `Usage: cscript rebase-stack <target> [feature] <count> [--push] [-y|--yes]
+  help: `Usage: cscript rebase-stack <target> [feature] <count> [-y|--yes]
 
 Replays the top <count> commits of <feature> onto <target>, dropping the
 commits beneath them. Equivalent to:
@@ -139,13 +170,17 @@ and restored automatically (--autostash).
 Before rebasing, the resolved command and the commits to replay/drop are
 printed for confirmation (skip with -y).
 
+After a successful rebase, if <feature> lives on a remote (upstream configured
+and not [gone]) you're offered a force-with-lease push of it. A branch whose
+remote was deleted is skipped so a merged/closed PR branch isn't resurrected.
+
 Options:
-  --push      After a successful rebase, git push --force-with-lease.
-  -y, --yes   Skip the confirmation prompt.
+  -y, --yes   Skip the confirmation prompt and auto-accept the push offer
+              (force-with-lease pushes <feature> with no prompt).
 
 Examples:
   cscript rebase-stack origin/master ~2
-  cscript rebase-stack origin/master feature/my-branch 2 --push`,
+  cscript rebase-stack origin/master feature/my-branch 2 -y`,
   run,
 };
 
