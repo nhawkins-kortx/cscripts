@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="luxury">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>cscript amend-stack - system interaction</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/daisyui@5.5.19/daisyui.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/daisyui@5.5.19/themes.css">
+  <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4.2.4/dist/index.global.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; }
+    :where(.grid, .flex) > * { min-width: 0; }
+    :where(p, h1, h2, h3, h4, li, dd, td, th, .badge) { overflow-wrap: anywhere; }
+    :where(img, svg) { max-width: 100%; height: auto; }
+    .asf-diagram svg { max-width: 100%; height: auto; }
+    .asf-mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  </style>
+  <script type="module">
+    import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11.15.0/dist/mermaid.esm.min.mjs";
+    mermaid.initialize({
+      startOnLoad: true,
+      theme: "dark",
+      securityLevel: "strict",
+      flowchart: { htmlLabels: true, curve: "basis", nodeSpacing: 45, rankSpacing: 50 },
+      themeVariables: {
+        fontSize: "15px",
+        primaryColor: "#26324a",
+        primaryTextColor: "#e8ecf5",
+        primaryBorderColor: "#5b6b8c",
+        lineColor: "#8a97b4",
+        tertiaryColor: "#1a2233"
+      }
+    });
+  </script>
+</head>
+<body class="bg-base-200 text-base-content">
+  <main class="mx-auto max-w-6xl p-5 lg:p-9 space-y-8">
+
+    <header class="space-y-3">
+      <div class="flex flex-wrap items-center gap-3">
+        <h1 class="text-3xl lg:text-4xl font-bold asf-mono">cscript amend-stack</h1>
+        <span class="badge badge-primary badge-lg">system interaction</span>
+      </div>
+      <p class="text-base-content/70 max-w-3xl">
+        How the command interacts with your repository: it amends the current commit with the
+        <strong>staged index</strong>, then replays the whole dependent-branch <strong>forest</strong> onto the
+        rewritten commit - driving rebases in the current worktree, in linked worktrees, and finally the remote.
+        The load-bearing rule is the ordering: <strong>nothing is rewritten until every guard passes and you confirm.</strong>
+      </p>
+      <ul class="steps steps-vertical sm:steps-horizontal w-full text-sm">
+        <li class="step step-primary">Discover</li>
+        <li class="step step-primary">Capture old tips</li>
+        <li class="step step-primary">Preflight guards</li>
+        <li class="step step-primary">Plan + confirm</li>
+        <li class="step step-primary">Amend + restack</li>
+        <li class="step step-primary">Push</li>
+      </ul>
+    </header>
+
+    <!-- MAIN CONTROL FLOW -->
+    <section class="card card-border bg-base-100 shadow-lg">
+      <div class="card-body gap-4">
+        <div class="flex flex-wrap items-baseline justify-between gap-2">
+          <h2 class="card-title text-2xl">Control flow</h2>
+          <span class="text-sm text-base-content/60">read-only guards (blue) run before any mutation (amber)</span>
+        </div>
+        <div class="asf-diagram overflow-x-auto rounded-box border border-base-content/10 bg-base-200 p-3">
+          <pre class="mermaid">
+flowchart TD
+    START([cscript amend-stack]) --> ARGS{"parse args<br/>-y / --dry-run"}
+    ARGS -->|bad flag| USAGE[/exit 1: usage/]
+    ARGS --> HEAD{"HEAD state"}
+    HEAD -->|detached| E1[/exit 1: detached HEAD/]
+    HEAD -->|unborn / no commits| E2[/exit 1: nothing to amend/]
+    HEAD -->|branch tip| DISC["Discover forest<br/>git branch --contains oldHead<br/>parent = nearest strict ancestor"]
+    DISC --> CAP["Capture oldTip for amend branch<br/>+ every dependent"]
+    CAP --> SEL{"interactive?<br/>(not -y, not --dry-run)"}
+    SEL -->|yes| PICK["Numbered selection<br/>blank = all<br/>picking a branch pulls in its ancestors<br/>rest reported stale"]
+    SEL -->|no| ALL["select all dependents"]
+    PICK --> PRE
+    ALL --> PRE
+
+    subgraph GUARDS["PREFLIGHT — read-only, skipped under --dry-run"]
+      direction TB
+      PRE{"current worktree<br/>mid-rebase/merge?"} -->|yes| G1[/abort/]
+      PRE -->|no| PRE2{"unstaged tracked<br/>changes present?"}
+      PRE2 -->|yes| G2[/abort: stash or stage first/]
+      PRE2 -->|no| PRE3{"merge commit in<br/>a selected range?"}
+      PRE3 -->|yes| G3[/abort: cannot --onto a merge/]
+      PRE3 -->|no| PRE4{"selected branch busy in<br/>another worktree?<br/>(dirty / mid-rebase)"}
+      PRE4 -->|yes| G4[/abort: free it or deselect/]
+      PRE4 -->|no| OK([guards passed])
+    end
+
+    OK --> PLAN["Build plan + show staged diff<br/>print per-branch rebase --onto steps"]
+    PLAN --> DRY{"--dry-run?"}
+    DRY -->|yes| DEND[/print plan, exit - no mutation/]
+    DRY -->|no| CONF{"confirm? [Y]/n"}
+    CONF -->|n| ABORT[/Aborted - nothing changed/]
+    CONF -->|Y| MSG{"edit message?"}
+
+    MSG -->|keep| AMEND["git commit --amend --no-edit"]
+    MSG -->|edit| AMENDM["git commit --amend -m ..."]
+    AMEND --> CASCADE
+    AMENDM --> CASCADE
+
+    CASCADE["Rebase cascade, parents first<br/>git rebase --autostash --onto parent oldParentTip branch"] --> LOC{"branch location"}
+    LOC -->|free| CWT["rebase in current worktree"]
+    LOC -->|clean linked worktree| GC["rebase in place via git -C path"]
+    CWT --> CONFL{"conflict?"}
+    GC --> CONFL
+    CONFL -->|yes| STOP[/"stop &amp; guide<br/>worktree-aware continue/abort<br/>+ undo recipe for already-rewritten branches"/]
+    CONFL -->|no, more branches| CASCADE
+    CONFL -->|no, done| RESTORE["return current worktree to amend branch"]
+
+    RESTORE --> PUSH{"push? [Y]/n<br/>(auto under -y)"}
+    PUSH -->|n| UNDO
+    PUSH -->|Y| PUSHDO["force-with-lease to each real upstream<br/>if a parent push is rejected,<br/>skip its descendants"]
+    PUSHDO --> UNDO["print undo recipe<br/>(git branch -f / git -C reset --hard)"]
+    UNDO --> DONE([Done])
+
+    classDef guard fill:#1f3b57,stroke:#4a86c5,color:#dbe9f7;
+    classDef mutate fill:#5a4416,stroke:#d0a43a,color:#f6eccf;
+    classDef stopn fill:#5a1f28,stroke:#d05a6e,color:#f7dbe1;
+    classDef done fill:#1f4a34,stroke:#3fae74,color:#d6f2e2;
+    class PRE,PRE2,PRE3,PRE4,OK,GUARDS guard;
+    class AMEND,AMENDM,CASCADE,CWT,GC,RESTORE,PUSHDO,UNDO mutate;
+    class E1,E2,G1,G2,G3,G4,STOP,ABORT,USAGE stopn;
+    class DONE,DEND done;
+          </pre>
+        </div>
+        <div class="flex flex-wrap gap-2 text-xs">
+          <span class="badge badge-soft badge-info">blue = read-only guard</span>
+          <span class="badge badge-soft badge-warning">amber = mutates the repo</span>
+          <span class="badge badge-soft badge-error">red = abort / stop</span>
+          <span class="badge badge-soft badge-success">green = terminal success</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- INTERACTION SURFACES -->
+    <section class="card card-border bg-base-100 shadow-lg">
+      <div class="card-body gap-4">
+        <h2 class="card-title text-2xl">What it drives</h2>
+        <p class="text-base-content/70 max-w-3xl text-sm">
+          One process orchestrates four git surfaces. All worktrees share a single object store, which is
+          why a branch checked out elsewhere can be rebased <em>in place</em> once the new base commits exist.
+        </p>
+        <div class="asf-diagram overflow-x-auto rounded-box border border-base-content/10 bg-base-200 p-3">
+          <pre class="mermaid">
+flowchart LR
+    USER(["you"]) -->|"staged index + answers"| AS
+
+    subgraph AS["amend-stack (one process)"]
+      direction TB
+      ORCH["orchestrator<br/>discover · plan · cascade"]
+    end
+
+    ORCH -->|"commit --amend (index only)"| CWT["Current worktree<br/>amend branch + free-branch rebases"]
+    ORCH -->|"git -C &lt;path&gt; rebase"| LWT["Linked worktrees<br/>clean, branch-in-place"]
+    CWT --> OBJ[("Shared object store<br/>.git/objects")]
+    LWT --> OBJ
+    OBJ -->|"new base + rebased tips"| ORCH
+    ORCH -->|"push --force-with-lease<br/>branch:upstream"| REMOTE[("origin<br/>rewritten PR branches")]
+
+    classDef s fill:#26324a,stroke:#5b6b8c,color:#e8ecf5;
+    classDef store fill:#173a34,stroke:#3fae74,color:#d6f2e2;
+    class CWT,LWT,ORCH s;
+    class OBJ,REMOTE store;
+          </pre>
+        </div>
+      </div>
+    </section>
+
+    <!-- SUPPORTING DETAIL -->
+    <section class="grid gap-5 lg:grid-cols-3">
+      <div class="card card-border bg-base-100">
+        <div class="card-body gap-2">
+          <h3 class="card-title text-lg">Ordering invariant</h3>
+          <p class="text-sm text-base-content/70">Why the flow is shaped this way:</p>
+          <div class="asf-mono text-xs bg-base-200 rounded-box p-3 leading-relaxed">
+            discover &rarr; capture&nbsp;tips &rarr;<br/>
+            <span class="text-info">preflight</span> &rarr; plan &rarr;
+            <span class="text-warning">confirm</span> &rarr;<br/>
+            <span class="text-warning">amend + rebase</span> &rarr; push
+          </div>
+          <p class="text-sm text-base-content/70">
+            Every abort condition is evaluated <strong>before</strong> the amend, so a run can never end
+            up amended-but-stuck.
+          </p>
+        </div>
+      </div>
+
+      <div class="card card-border bg-base-100">
+        <div class="card-body gap-2">
+          <h3 class="card-title text-lg">Preflight guards</h3>
+          <ul class="text-sm space-y-1.5">
+            <li>🔵 detached / unborn HEAD</li>
+            <li>🔵 current worktree mid-rebase/merge</li>
+            <li>🔵 unstaged tracked changes (index-only tool)</li>
+            <li>🔵 merge commit in a selected range</li>
+            <li>🔵 selected branch busy in another worktree</li>
+          </ul>
+          <p class="text-xs text-base-content/60">Skipped under <span class="asf-mono">--dry-run</span> so the plan is always previewable.</p>
+        </div>
+      </div>
+
+      <div class="card card-border bg-base-100">
+        <div class="card-body gap-2">
+          <h3 class="card-title text-lg">Rebase cascade</h3>
+          <p class="text-sm text-base-content/70">Each dependent, parents first:</p>
+          <div class="asf-mono text-xs bg-base-200 rounded-box p-3 leading-relaxed break-all">
+            git rebase --autostash<br/>
+            &nbsp;&nbsp;--onto <span class="text-success">&lt;parent&gt;</span>
+            <span class="text-error">&lt;oldParentTip&gt;</span>
+            <span class="text-info">&lt;branch&gt;</span>
+          </div>
+          <p class="text-sm text-base-content/70">
+            <span class="text-success asf-mono">&lt;parent&gt;</span> is a branch name (resolves to its
+            already-rebased tip); <span class="text-error asf-mono">&lt;oldParentTip&gt;</span> is a SHA captured
+            before any mutation. That pairing is what lets fan-out trees replay cleanly.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <div role="alert" class="alert alert-soft alert-info">
+      <span class="text-sm">
+        Verified by 71 integration tests across four adversarial review rounds. Documented design edges:
+        empty/EOF input follows the <span class="asf-mono">[Y]/n</span> default; merge stacks are refused, not rebased;
+        message edits are single-line.
+      </span>
+    </div>
+
+  </main>
+</body>
+</html>
