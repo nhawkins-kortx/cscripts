@@ -592,6 +592,28 @@ test("edge: untracked-only files in a linked worktree do not block", () => {
   expect(git(wt, "rev-parse", "HEAD")).toBe(git(repo, "rev-parse", "top"));
 });
 
+test("edge: mid-chain conflict guidance lists undo for already-rebased branches", () => {
+  const repo = initRepo();
+  git(repo, "checkout", "-b", "bottom");
+  commit(repo, "shared.txt", "base\n");
+  git(repo, "checkout", "-b", "mid");
+  commit(repo, "mid.txt");
+  git(repo, "checkout", "-b", "top");
+  commit(repo, "shared.txt", "top\n"); // top edits shared -> replay conflict after amend
+  git(repo, "checkout", "bottom");
+  const midOld = git(repo, "rev-parse", "mid");
+
+  writeFileSync(join(repo, "shared.txt"), "amended\n");
+  git(repo, "add", "shared.txt");
+
+  const r = amendStack(repo, ["-y"], "1\n");
+
+  expect(r.code).toBe(1);
+  // mid was rebased before top conflicted; its restore recipe must be printed
+  expect(r.err + r.out).toContain(`git branch -f mid ${midOld.slice(0, 9)}`);
+  expect(r.err + r.out).toContain("git branch -f bottom");
+});
+
 test("help lists the flags", () => {
   const repo = sandbox();
   git(repo, "init", "-b", "master");

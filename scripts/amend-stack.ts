@@ -21,6 +21,9 @@ function fail(message: string): never {
 }
 
 function confirm(message: string): boolean {
+  // Bun's prompt() returns null for BOTH an empty line (Enter) and EOF - they can't be
+  // told apart, so empty input follows the documented [Y]/n default (yes). Non-interactive
+  // callers must pass -y explicitly (see help).
   return !(prompt(message) ?? "").trim().toLowerCase().startsWith("n");
 }
 
@@ -237,17 +240,26 @@ function pushPass(rewritten: string[], yes: boolean): void {
   for (const b of chosen) if (!pushBranch(b)) console.warn(`Push failed for ${b}; continuing.`);
 }
 
-function conflictGuidance(step: Step, remaining: Step[], amendBranch: string, oldHead: string): string {
+function restoreLine(branch: string, sha: string, cwd?: string): string {
+  return cwd ? `  git -C ${cwd} reset --hard ${sha.slice(0, 9)}` : `  git branch -f ${branch} ${sha.slice(0, 9)}`;
+}
+
+function conflictGuidance(step: Step, done: Step[], remaining: Step[], amendBranch: string, oldHead: string, oldTip: Record<string, string>): string {
   const at = step.cwd ? `${step.branch} (in ${step.cwd})` : step.branch;
   const cont = step.cwd ? `git -C ${step.cwd} rebase --continue` : "git rebase --continue";
   const abort = step.cwd ? `git -C ${step.cwd} rebase --abort` : "git rebase --abort";
   const rest = remaining.map((s) => `  ${s.display}`).join("\n");
+  // Everything already rewritten before this conflict: the amend branch + each completed step.
+  const undo = [
+    restoreLine(amendBranch, oldHead),
+    ...done.map((s) => restoreLine(s.branch, oldTip[s.branch], s.cwd)),
+  ].join("\n");
 
   return (
     `\nRestack stopped at ${at} (conflict).\nResolve, 'git add', then '${cont}'.` +
     (rest ? `\nThen finish the remaining branches:\n${rest}` : "") +
     `\nOr '${abort}' to back out this branch.` +
-    `\nTo undo the amend after aborting:\n  git branch -f ${amendBranch} ${oldHead.slice(0, 9)}`
+    `\nTo undo everything already rewritten (after aborting this rebase):\n${undo}`
   );
 }
 
@@ -341,7 +353,7 @@ function run(args: string[]): void {
 
   const result = runSteps(steps);
   if (!result.ok) {
-    fail(conflictGuidance(steps[result.index], steps.slice(result.index + 1), amendBranch, oldHead));
+    fail(conflictGuidance(steps[result.index], steps.slice(0, result.index), steps.slice(result.index + 1), amendBranch, oldHead, oldTip));
   }
 
   if (git(["checkout", amendBranch]).code !== 0) {
@@ -351,11 +363,8 @@ function run(args: string[]): void {
   pushPass([amendBranch, ...selected], yes);
 
   console.log("\nDone. To undo:");
-  console.log(`  git branch -f ${amendBranch} ${oldTip[amendBranch].slice(0, 9)}`);
-  for (const s of steps) {
-    const old = oldTip[s.branch].slice(0, 9);
-    console.log(s.cwd ? `  git -C ${s.cwd} reset --hard ${old}` : `  git branch -f ${s.branch} ${old}`);
-  }
+  console.log(restoreLine(amendBranch, oldTip[amendBranch]));
+  for (const s of steps) console.log(restoreLine(s.branch, oldTip[s.branch], s.cwd));
 }
 
 const script: CScriptScript = {
@@ -381,6 +390,10 @@ branch auto-includes its ancestors; anything left out is reported as stale.
 
 After a clean restack, rewritten branches that live on a remote are offered
 for a single force-with-lease push (numbered; blank = all).
+
+Empty input follows the [Y]/n default (proceed), so non-interactive callers
+that do NOT want to proceed must not invoke it without a real answer; pass -y
+for intentional non-interactive runs.
 
 Options:
   -y, --yes    Skip confirmation and auto-push every live-remote rewritten
