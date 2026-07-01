@@ -343,6 +343,123 @@ test("push: skips a branch whose remote was deleted ([gone])", () => {
   expect(() => git(bare, "rev-parse", "--verify", "top")).toThrow();
 });
 
+test("edge: refuses when there are unstaged changes to tracked files", () => {
+  const repo = initRepo();
+  git(repo, "checkout", "-b", "bottom");
+  commit(repo, "shared.txt", "L1\nL2\nL3\n");
+  git(repo, "checkout", "-b", "top");
+  commit(repo, "top.txt");
+  git(repo, "checkout", "bottom");
+
+  const bottomBefore = git(repo, "rev-parse", "bottom");
+  writeFileSync(join(repo, "shared.txt"), "L1-STAGED\nL2\nL3\n");
+  git(repo, "add", "shared.txt");
+  writeFileSync(join(repo, "shared.txt"), "L1-STAGED\nL2\nL3-UNSTAGED\n"); // now MM
+
+  const r = amendStack(repo, ["-y"], "1\n");
+
+  expect(r.code).toBe(1);
+  expect(r.err + r.out).toMatch(/unstaged/i);
+  expect(git(repo, "rev-parse", "bottom")).toBe(bottomBefore); // nothing mutated
+  expect(git(repo, "symbolic-ref", "--short", "HEAD")).toBe("bottom");
+});
+
+test("edge: untracked files are neither swept into the amend nor blocking", () => {
+  const repo = initRepo();
+  git(repo, "checkout", "-b", "bottom");
+  commit(repo, "bottom.txt");
+  git(repo, "checkout", "-b", "top");
+  commit(repo, "top.txt");
+  git(repo, "checkout", "bottom");
+
+  writeFileSync(join(repo, "staged.txt"), "s");
+  git(repo, "add", "staged.txt");
+  writeFileSync(join(repo, "untracked.txt"), "u"); // untracked, never added
+
+  const r = amendStack(repo, ["-y"], "1\n");
+
+  expect(r.code).toBe(0);
+  expect(git(repo, "cat-file", "-t", "bottom:staged.txt")).toBe("blob");
+  expect(() => git(repo, "cat-file", "-t", "bottom:untracked.txt")).toThrow();
+});
+
+test("edge: no dependents - just amends the current commit", () => {
+  const repo = initRepo();
+  git(repo, "checkout", "-b", "solo");
+  commit(repo, "solo.txt");
+  const before = git(repo, "rev-parse", "solo");
+  writeFileSync(join(repo, "x.txt"), "x");
+  git(repo, "add", "x.txt");
+
+  const r = amendStack(repo, ["-y"], "1\n");
+
+  expect(r.code).toBe(0);
+  expect(git(repo, "rev-parse", "solo")).not.toBe(before);
+  expect(git(repo, "cat-file", "-t", "solo:x.txt")).toBe("blob");
+  expect(git(repo, "symbolic-ref", "--short", "HEAD")).toBe("solo");
+});
+
+test("edge: detached HEAD is rejected", () => {
+  const repo = initRepo();
+  git(repo, "checkout", "-b", "bottom");
+  commit(repo, "bottom.txt");
+  git(repo, "checkout", "--detach");
+
+  const r = amendStack(repo, ["-y"], "1\n");
+
+  expect(r.code).toBe(1);
+  expect(r.err + r.out).toMatch(/detached/i);
+});
+
+test("edge: deep linear chain (3 dependents) all replay in order", () => {
+  const repo = initRepo();
+  git(repo, "checkout", "-b", "b0");
+  commit(repo, "b0.txt");
+  git(repo, "checkout", "-b", "b1");
+  commit(repo, "b1.txt");
+  git(repo, "checkout", "-b", "b2");
+  commit(repo, "b2.txt");
+  git(repo, "checkout", "-b", "b3");
+  commit(repo, "b3.txt");
+  git(repo, "checkout", "b0");
+  writeFileSync(join(repo, "x.txt"), "x");
+  git(repo, "add", "x.txt");
+
+  const r = amendStack(repo, ["-y"], "1\n");
+
+  expect(r.code).toBe(0);
+  expect(git(repo, "rev-parse", "b1~1")).toBe(git(repo, "rev-parse", "b0"));
+  expect(git(repo, "rev-parse", "b2~1")).toBe(git(repo, "rev-parse", "b1"));
+  expect(git(repo, "rev-parse", "b3~1")).toBe(git(repo, "rev-parse", "b2"));
+  expect(git(repo, "cat-file", "-t", "b0:x.txt")).toBe("blob");
+});
+
+test("edge: mid-rebase in a linked worktree aborts before mutating", () => {
+  const repo = initRepo();
+  git(repo, "checkout", "-b", "bottom");
+  commit(repo, "conflict.txt", "base\n");
+  git(repo, "checkout", "-b", "top");
+  commit(repo, "conflict.txt", "top\n");
+  git(repo, "checkout", "bottom");
+  const wt = addWorktree(repo, "top");
+
+  // start a rebase in the linked worktree that leaves it mid-conflict
+  git(repo, "checkout", "-b", "diverge");
+  commit(repo, "conflict.txt", "diverge\n");
+  git(repo, "checkout", "bottom");
+  Bun.spawnSync(["git", "rebase", "diverge"], { cwd: wt }); // conflicts, leaves rebase-merge
+
+  const bottomBefore = git(repo, "rev-parse", "bottom");
+  writeFileSync(join(repo, "y.txt"), "y");
+  git(repo, "add", "y.txt");
+
+  const r = amendStack(repo, ["-y"], "1\n");
+
+  expect(r.code).toBe(1);
+  expect(r.err + r.out).toMatch(/(mid-operation|worktree|busy)/i);
+  expect(git(repo, "rev-parse", "bottom")).toBe(bottomBefore);
+});
+
 test("help lists the flags", () => {
   const repo = sandbox();
   git(repo, "init", "-b", "master");

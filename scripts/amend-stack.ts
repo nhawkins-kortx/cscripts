@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { CScriptScript } from "../types";
 
@@ -113,6 +113,31 @@ function midOperation(path: string): boolean {
 
   return ["rebase-merge", "rebase-apply", "MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD"]
     .some((m) => existsSync(join(gitDir, m)));
+}
+
+function rebasingBranch(path: string): string | null {
+  const gitDir = git(["rev-parse", "--absolute-git-dir"], path).stdout;
+  for (const d of ["rebase-merge", "rebase-apply"]) {
+    const hn = join(gitDir, d, "head-name");
+    if (existsSync(hn)) {
+      try {
+        return readFileSync(hn, "utf8").trim().replace("refs/heads/", "");
+      } catch {
+        return null;
+      }
+    }
+  }
+
+  return null;
+}
+
+function busyOccupier(branch: string, wts: Worktree[], selfPath: string): string | null {
+  const w = wts.find(
+    (wt) => wt.path !== selfPath && (wt.branch === branch || rebasingBranch(wt.path) === branch),
+  );
+  if (!w) return null;
+
+  return !isClean(w.path) || midOperation(w.path) ? w.path : null;
 }
 
 type Step = { branch: string; onto: string; cut: string; cwd?: string; display: string };
@@ -264,13 +289,14 @@ function run(args: string[]): void {
   const wts = worktrees();
   const selfPath = git(["rev-parse", "--show-toplevel"]).stdout;
   if (midOperation(selfPath)) fail("Current worktree is mid-rebase/merge - finish or abort it first.");
+  if (!dryRun && git(["diff", "--quiet"]).code !== 0) {
+    fail("You have unstaged changes to tracked files.\namend-stack only folds in the staged index; stash or stage the rest first (otherwise a dependent rebase could drag them across branches).");
+  }
 
   const blocked: string[] = [];
   for (const b of selected) {
-    const wtPath = worktreeForBranch(b, wts);
-    if (wtPath && wtPath !== selfPath && (!isClean(wtPath) || midOperation(wtPath))) {
-      blocked.push(`${b} (checked out in ${wtPath} - dirty or mid-operation)`);
-    }
+    const busyPath = busyOccupier(b, wts, selfPath);
+    if (busyPath) blocked.push(`${b} (busy in ${busyPath} - dirty or mid-operation)`);
   }
   if (blocked.length > 0) {
     fail(`\nCannot restack - these selected branches are busy in another worktree:\n  ${blocked.join("\n  ")}\n\nFinish/clean those worktrees or deselect the branches (deselecting drops their descendants).`);
