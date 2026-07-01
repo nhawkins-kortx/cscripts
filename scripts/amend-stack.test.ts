@@ -614,6 +614,54 @@ test("edge: mid-chain conflict guidance lists undo for already-rebased branches"
   expect(r.err + r.out).toContain("git branch -f bottom");
 });
 
+test("push: skips a descendant when its ancestor's push is rejected", () => {
+  const { repo, bare } = initRepoWithOrigin();
+  git(repo, "checkout", "-b", "bottom");
+  commit(repo, "bottom.txt");
+  git(repo, "checkout", "-b", "top");
+  commit(repo, "top.txt");
+  git(repo, "push", "-u", "origin", "bottom", "top");
+  const topRemoteBefore = git(bare, "rev-parse", "top");
+
+  // A concurrent actor advances origin/bottom; our remote-tracking ref goes stale.
+  const other = sandbox();
+  git(other, "clone", bare, ".");
+  git(other, "checkout", "bottom");
+  writeFileSync(join(other, "concurrent.txt"), "c");
+  git(other, "add", "-A");
+  git(other, "commit", "-m", "concurrent");
+  git(other, "push", "origin", "bottom");
+
+  git(repo, "checkout", "bottom");
+  writeFileSync(join(repo, "x.txt"), "x");
+  git(repo, "add", "x.txt");
+
+  const r = amendStack(repo, ["-y"], "1\n");
+
+  expect(r.code).toBe(0);
+  // bottom's push is lease-rejected; top must NOT be pushed onto a base the remote lacks
+  expect(r.out + r.err).toMatch(/Skipping top/i);
+  expect(git(bare, "rev-parse", "top")).toBe(topRemoteBefore);
+});
+
+test("selection: rejects non-plain-digit tokens (1e0, 0x2)", () => {
+  const repo = initRepo();
+  git(repo, "checkout", "-b", "bottom");
+  commit(repo, "bottom.txt");
+  git(repo, "checkout", "-b", "top");
+  commit(repo, "top.txt");
+  git(repo, "checkout", "bottom");
+  const bottomBefore = git(repo, "rev-parse", "bottom");
+  writeFileSync(join(repo, "x.txt"), "x");
+  git(repo, "add", "x.txt");
+
+  const r = amendStack(repo, [], "0x2\n"); // coercible to a number, but not a valid selection token
+
+  expect(r.code).toBe(1);
+  expect(r.err + r.out).toMatch(/invalid selection/i);
+  expect(git(repo, "rev-parse", "bottom")).toBe(bottomBefore); // nothing mutated
+});
+
 test("help lists the flags", () => {
   const repo = sandbox();
   git(repo, "init", "-b", "master");

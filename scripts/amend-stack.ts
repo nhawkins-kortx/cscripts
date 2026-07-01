@@ -77,8 +77,10 @@ function topoOrder(oldHead: string, deps: string[]): string[] {
 }
 
 function parseSelection(input: string, max: number): number[] | null {
-  const nums = input.split(",").map((s) => s.trim()).filter(Boolean).map(Number);
-  if (nums.some((n) => !Number.isInteger(n) || n < 1 || n > max)) return null;
+  const tokens = input.split(",").map((s) => s.trim()).filter(Boolean);
+  if (tokens.some((t) => !/^\d+$/.test(t))) return null; // reject 1e0, 0x2, 1.0, etc.
+  const nums = tokens.map(Number);
+  if (nums.some((n) => n < 1 || n > max)) return null;
 
   return [...new Set(nums)];
 }
@@ -223,7 +225,7 @@ function pushPass(rewritten: string[], yes: boolean): void {
   pushable.forEach((b, i) => console.log(`  ${i + 1}) ${b}`));
   if (!(yes || confirm(`\nForce-with-lease push? [Y]/n:`))) return;
 
-  let chosen = pushable;
+  let chosen = new Set(pushable);
   if (!yes) {
     const input = (prompt("Which? (numbers, comma-separated; blank = all):") ?? "").trim();
     if (input !== "") {
@@ -233,11 +235,25 @@ function pushPass(rewritten: string[], yes: boolean): void {
 
         return;
       }
-      chosen = picked.map((n) => pushable[n - 1]);
+      chosen = new Set(picked.map((n) => pushable[n - 1]));
     }
   }
+
   console.log("\nPushing with --force-with-lease...");
-  for (const b of chosen) if (!pushBranch(b)) console.warn(`Push failed for ${b}; continuing.`);
+  // pushable is parent-first (bottom -> top). If an ancestor's push fails, pushing a
+  // descendant would leave the remote stack based on a commit that isn't on the remote.
+  const failed: string[] = [];
+  for (const b of pushable) {
+    if (!chosen.has(b)) continue;
+    if (failed.some((f) => isAncestor(f, b))) {
+      console.warn(`Skipping ${b}: an ancestor push failed - pushing it would leave an inconsistent remote stack.`);
+      continue;
+    }
+    if (!pushBranch(b)) {
+      console.warn(`Push failed for ${b}; continuing.`);
+      failed.push(b);
+    }
+  }
 }
 
 function restoreLine(branch: string, sha: string, cwd?: string): string {
