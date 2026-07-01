@@ -58,6 +58,16 @@ function initRepo(): string {
   return repo;
 }
 
+function initRepoWithOrigin(): { repo: string; bare: string } {
+  const repo = initRepo();
+  const bare = sandbox();
+  git(bare, "init", "--bare");
+  git(repo, "remote", "add", "origin", bare);
+  git(repo, "push", "-u", "origin", "master");
+
+  return { repo, bare };
+}
+
 test("rejects an unknown flag", () => {
   const repo = sandbox();
   git(repo, "init", "-b", "master");
@@ -273,4 +283,62 @@ test("conflict: stops with guidance and leaves the conflict in place", () => {
   expect(r.err + r.out).toContain("rebase --continue");
   const status = Bun.spawnSync(["git", "status"], { cwd: repo }).stdout.toString();
   expect(status.toLowerCase()).toMatch(/rebase|unmerged|both modified/);
+});
+
+test("push: -y auto-pushes rewritten live-remote branches with force-with-lease", () => {
+  const { repo, bare } = initRepoWithOrigin();
+  git(repo, "checkout", "-b", "bottom");
+  commit(repo, "bottom.txt");
+  git(repo, "checkout", "-b", "top");
+  commit(repo, "top.txt");
+  git(repo, "push", "-u", "origin", "bottom", "top");
+  git(repo, "checkout", "bottom");
+  writeFileSync(join(repo, "x.txt"), "x");
+  git(repo, "add", "x.txt");
+
+  const r = amendStack(repo, ["-y"], "1\n");
+
+  expect(r.code).toBe(0);
+  expect(r.out).toContain("force-with-lease");
+  expect(git(bare, "rev-parse", "bottom")).toBe(git(repo, "rev-parse", "bottom"));
+  expect(git(bare, "rev-parse", "top")).toBe(git(repo, "rev-parse", "top"));
+});
+
+test("push: declining leaves remotes untouched", () => {
+  const { repo, bare } = initRepoWithOrigin();
+  git(repo, "checkout", "-b", "bottom");
+  commit(repo, "bottom.txt");
+  git(repo, "checkout", "-b", "top");
+  commit(repo, "top.txt");
+  git(repo, "push", "-u", "origin", "bottom", "top");
+  git(repo, "checkout", "bottom");
+  const topRemoteBefore = git(bare, "rev-parse", "top");
+  writeFileSync(join(repo, "x.txt"), "x");
+  git(repo, "add", "x.txt");
+
+  // select all(blank), confirm(blank=yes), keep message(1), push? n
+  const r = amendStack(repo, [], "\n\n1\nn\n");
+
+  expect(r.code).toBe(0);
+  expect(r.out).not.toContain("Pushing with --force-with-lease");
+  expect(git(bare, "rev-parse", "top")).toBe(topRemoteBefore);
+});
+
+test("push: skips a branch whose remote was deleted ([gone])", () => {
+  const { repo, bare } = initRepoWithOrigin();
+  git(repo, "checkout", "-b", "bottom");
+  commit(repo, "bottom.txt");
+  git(repo, "checkout", "-b", "top");
+  commit(repo, "top.txt");
+  git(repo, "push", "-u", "origin", "bottom", "top");
+  git(repo, "push", "origin", "--delete", "top");
+  git(repo, "checkout", "bottom");
+  writeFileSync(join(repo, "x.txt"), "x");
+  git(repo, "add", "x.txt");
+
+  const r = amendStack(repo, ["-y"], "1\n");
+
+  expect(r.code).toBe(0);
+  expect(git(bare, "rev-parse", "bottom")).toBe(git(repo, "rev-parse", "bottom"));
+  expect(() => git(bare, "rev-parse", "--verify", "top")).toThrow();
 });

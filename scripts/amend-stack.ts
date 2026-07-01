@@ -152,6 +152,60 @@ function amendCommit(yes: boolean): void {
   if (gitInherit(["commit", "--amend", "--no-edit"]) !== 0) fail("Amend failed.");
 }
 
+function verify(ref: string): boolean {
+  return git(["rev-parse", "--verify", "--quiet", ref]).code === 0;
+}
+
+function upstreamOf(branch: string): string | null {
+  const r = git(["rev-parse", "--abbrev-ref", "--symbolic-full-name", `${branch}@{upstream}`]);
+
+  return r.code === 0 ? r.stdout : null;
+}
+
+function pushableBranches(branches: string[]): string[] {
+  return branches.filter((b) => {
+    const up = upstreamOf(b);
+
+    return up !== null && verify(up);
+  });
+}
+
+function pushBranch(branch: string): boolean {
+  const up = upstreamOf(branch);
+  if (up === null) return true;
+  const remote = up.split("/")[0];
+
+  return gitInherit(["push", "--force-with-lease", remote, branch]) === 0;
+}
+
+function pushPass(rewritten: string[], yes: boolean): void {
+  const pushable = pushableBranches(rewritten);
+  if (pushable.length === 0) {
+    console.log("\nNo branches with live remotes to push.");
+
+    return;
+  }
+  console.log("\nThese rewritten branches are on a remote:");
+  pushable.forEach((b, i) => console.log(`  ${i + 1}) ${b}`));
+  if (!(yes || confirm(`\nForce-with-lease push? [Y]/n:`))) return;
+
+  let chosen = pushable;
+  if (!yes) {
+    const input = (prompt("Which? (numbers, comma-separated; blank = all):") ?? "").trim();
+    if (input !== "") {
+      const picked = parseSelection(input, pushable.length);
+      if (!picked || picked.length === 0) {
+        console.log("Nothing selected.");
+
+        return;
+      }
+      chosen = picked.map((n) => pushable[n - 1]);
+    }
+  }
+  console.log("\nPushing with --force-with-lease...");
+  for (const b of chosen) if (!pushBranch(b)) console.warn(`Push failed for ${b}; continuing.`);
+}
+
 function conflictGuidance(step: Step, remaining: Step[], amendBranch: string, oldHead: string): string {
   const at = step.cwd ? `${step.branch} (in ${step.cwd})` : step.branch;
   const cont = step.cwd ? `git -C ${step.cwd} rebase --continue` : "git rebase --continue";
@@ -248,6 +302,8 @@ function run(args: string[]): void {
   }
 
   git(["checkout", amendBranch]);
+
+  pushPass([amendBranch, ...selected], yes);
 
   console.log("\nDone. To undo:");
   console.log(`  git branch -f ${amendBranch} ${oldTip[amendBranch].slice(0, 9)}`);
