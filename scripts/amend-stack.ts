@@ -152,6 +152,20 @@ function amendCommit(yes: boolean): void {
   if (gitInherit(["commit", "--amend", "--no-edit"]) !== 0) fail("Amend failed.");
 }
 
+function conflictGuidance(step: Step, remaining: Step[], amendBranch: string, oldHead: string): string {
+  const at = step.cwd ? `${step.branch} (in ${step.cwd})` : step.branch;
+  const cont = step.cwd ? `git -C ${step.cwd} rebase --continue` : "git rebase --continue";
+  const abort = step.cwd ? `git -C ${step.cwd} rebase --abort` : "git rebase --abort";
+  const rest = remaining.map((s) => `  ${s.display}`).join("\n");
+
+  return (
+    `\nRestack stopped at ${at} (conflict).\nResolve, 'git add', then '${cont}'.` +
+    (rest ? `\nThen finish the remaining branches:\n${rest}` : "") +
+    `\nOr '${abort}' to back out this branch.` +
+    `\nTo undo the amend after aborting:\n  git branch -f ${amendBranch} ${oldHead.slice(0, 9)}`
+  );
+}
+
 type Result = { ok: boolean; index: number };
 
 function runSteps(steps: Step[]): Result {
@@ -229,7 +243,9 @@ function run(args: string[]): void {
   amendCommit(yes);
 
   const result = runSteps(steps);
-  if (!result.ok) fail(`\nRestack stopped at ${steps[result.index].branch} (conflict). Resolve, 'git add', 'git rebase --continue'.`);
+  if (!result.ok) {
+    fail(conflictGuidance(steps[result.index], steps.slice(result.index + 1), amendBranch, oldHead));
+  }
 
   git(["checkout", amendBranch]);
 

@@ -255,3 +255,22 @@ test("worktree locked-busy: dirty linked worktree in the set aborts before mutat
   expect(r.err + r.out).toMatch(/top.*(dirty|in another worktree|checked out|worktree)/i);
   expect(git(repo, "rev-parse", "bottom")).toBe(bottomBefore);
 });
+
+test("conflict: stops with guidance and leaves the conflict in place", () => {
+  const repo = initRepo();
+  git(repo, "checkout", "-b", "bottom");
+  commit(repo, "shared.txt", "bottom version");
+  git(repo, "checkout", "-b", "top");
+  commit(repo, "shared.txt", "top version"); // edits same file -> replay conflict
+  git(repo, "checkout", "bottom");
+
+  writeFileSync(join(repo, "shared.txt"), "amended bottom version");
+  git(repo, "add", "shared.txt");
+
+  const r = amendStack(repo, ["-y"], "1\n");
+
+  expect(r.code).toBe(1);
+  expect(r.err + r.out).toContain("rebase --continue");
+  const status = Bun.spawnSync(["git", "status"], { cwd: repo }).stdout.toString();
+  expect(status.toLowerCase()).toMatch(/rebase|unmerged|both modified/);
+});
