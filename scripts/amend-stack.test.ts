@@ -342,3 +342,14 @@ test("push: skips a branch whose remote was deleted ([gone])", () => {
   expect(git(bare, "rev-parse", "bottom")).toBe(git(repo, "rev-parse", "bottom"));
   expect(() => git(bare, "rev-parse", "--verify", "top")).toThrow();
 });
+
+test("help lists the flags", () => {
+  const repo = sandbox();
+  git(repo, "init", "-b", "master");
+
+  const r = amendStack(repo, ["help"]);
+
+  expect(r.out).toContain("amend-stack");
+  expect(r.out).toContain("--dry-run");
+  expect(r.out).toContain("--yes");
+});

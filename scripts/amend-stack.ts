@@ -312,8 +312,34 @@ function run(args: string[]): void {
 
 const script: CScriptScript = {
   description: "Amend the current commit and restack every dependent branch onto it.",
-  help: `Usage: cscript amend-stack [-y|--yes] [--dry-run]`,
+  help: `Usage: cscript amend-stack [-y|--yes] [--dry-run]
+
+Amends the current commit with the staged changes (optionally editing its
+message), then replays every dependent branch stacked above it onto the
+rewritten commit. Dependents are discovered from topology (git branch
+--contains) and modelled as a forest: each branch is rebased --onto its
+parent's new tip, cutting the parent's old tip.
+
+Only staged changes are folded in (never runs 'git add'). An empty index
+means a message-only amend.
+
+Dependents checked out in another clean worktree are rebased in place there
+(git -C). A dependent whose worktree is dirty or mid-rebase blocks the run:
+amend-stack aborts before any mutation and asks you to clean/finish it or
+deselect it. The current worktree must not be mid-rebase/merge.
+
+You pick which dependents to restack (numbered; blank = all). Picking a
+branch auto-includes its ancestors; anything left out is reported as stale.
+
+After a clean restack, rewritten branches that live on a remote are offered
+for a single force-with-lease push (numbered; blank = all).
+
+Options:
+  -y, --yes    Skip confirmation and auto-push every live-remote rewritten
+               branch with force-with-lease.
+  --dry-run    Print the plan and exit without changing anything.`,
   run,
+  complete: () => ["-y", "--yes", "--dry-run"],
 };
 
 export default script;
