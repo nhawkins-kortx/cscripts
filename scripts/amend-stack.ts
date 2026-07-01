@@ -86,6 +86,22 @@ function planSteps(amendBranch: string, oldHead: string, ordered: string[], deps
   });
 }
 
+function stagedPreview(): string {
+  return git(["diff", "--cached", "--stat"]).stdout;
+}
+
+function amendCommit(yes: boolean): void {
+  const choice = yes ? "1" : (prompt("\nMessage: [1] keep  [2] edit :") ?? "1").trim();
+  if (choice === "2") {
+    const msg = (prompt("New commit message:") ?? "").trim();
+    if (msg === "") fail("Empty message - aborting.");
+    if (gitInherit(["commit", "--amend", "-m", msg]) !== 0) fail("Amend failed.");
+
+    return;
+  }
+  if (gitInherit(["commit", "--amend", "--no-edit"]) !== 0) fail("Amend failed.");
+}
+
 type Result = { ok: boolean; index: number };
 
 function runSteps(steps: Step[]): Result {
@@ -112,6 +128,8 @@ function run(args: string[]): void {
 
   const steps = planSteps(amendBranch, oldHead, ordered, deps, oldTip);
 
+  const preview = stagedPreview();
+  console.log(preview === "" ? "\n(no staged changes - message-only amend)" : `\nStaged changes:\n${preview}`);
   console.log(`\nAmend ${amendBranch} (${oldHead.slice(0, 9)}) with staged changes.`);
   console.log("Then restack:");
   steps.forEach((s, i) => console.log(`  ${i + 1}) ${s.display}`));
@@ -121,7 +139,7 @@ function run(args: string[]): void {
     return;
   }
 
-  if (gitInherit(["commit", "--amend", "--no-edit"]) !== 0) fail("Amend failed.");
+  amendCommit(yes);
 
   const result = runSteps(steps);
   if (!result.ok) fail(`\nRestack stopped at ${steps[result.index].branch} (conflict). Resolve, 'git add', 'git rebase --continue'.`);

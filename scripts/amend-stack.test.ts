@@ -73,7 +73,7 @@ test("linear: amends bottom with staged change and replays the dependent", () =>
   writeFileSync(join(repo, "extra.txt"), "extra");
   git(repo, "add", "extra.txt");
 
-  const r = amendStack(repo, [], "\n"); // confirm plan with empty (=yes)
+  const r = amendStack(repo, [], "\n1\n"); // confirm plan (=yes), keep message
 
   expect(r.code).toBe(0);
   expect(git(repo, "rev-parse", "bottom")).not.toBe(bottomOld);
@@ -83,4 +83,51 @@ test("linear: amends bottom with staged change and replays the dependent", () =>
   expect(() => git(repo, "merge-base", "--is-ancestor", bottomOld, "top")).toThrow();
   expect(git(repo, "symbolic-ref", "--short", "HEAD")).toBe("bottom");
   expect(r.out).toContain("Done. To undo:");
+});
+
+test("staged-only: unstaged changes are not folded into the amend", () => {
+  const repo = initRepo();
+  git(repo, "checkout", "-b", "bottom");
+  commit(repo, "bottom.txt");
+  git(repo, "checkout", "-b", "top");
+  commit(repo, "top.txt");
+  git(repo, "checkout", "bottom");
+
+  writeFileSync(join(repo, "staged.txt"), "staged");
+  git(repo, "add", "staged.txt");
+  writeFileSync(join(repo, "unstaged.txt"), "unstaged"); // NOT added
+
+  const r = amendStack(repo, ["-y"], "1\n"); // keep message
+
+  expect(r.code).toBe(0);
+  expect(git(repo, "cat-file", "-t", "bottom:staged.txt")).toBe("blob");
+  expect(() => git(repo, "cat-file", "-t", "bottom:unstaged.txt")).toThrow();
+});
+
+test("message-only amend: empty index, message rewritten, tree unchanged", () => {
+  const repo = initRepo();
+  git(repo, "checkout", "-b", "bottom");
+  commit(repo, "bottom.txt");
+  const treeBefore = git(repo, "rev-parse", "bottom^{tree}");
+  git(repo, "checkout", "-b", "top");
+  commit(repo, "top.txt");
+  git(repo, "checkout", "bottom");
+
+  const r = amendStack(repo, [], "\n2\nreworded bottom\n"); // confirm, edit message
+
+  expect(r.code).toBe(0);
+  expect(git(repo, "rev-parse", "bottom^{tree}")).toBe(treeBefore);
+  expect(git(repo, "log", "-1", "--format=%s", "bottom")).toContain("reworded bottom");
+});
+
+test("prints the staged-changes preview before running", () => {
+  const repo = initRepo();
+  git(repo, "checkout", "-b", "bottom");
+  commit(repo, "bottom.txt");
+  writeFileSync(join(repo, "staged.txt"), "x");
+  git(repo, "add", "staged.txt");
+
+  const r = amendStack(repo, [], "n\n"); // decline
+
+  expect(r.out).toContain("staged.txt");
 });
