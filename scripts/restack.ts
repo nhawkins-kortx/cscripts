@@ -104,9 +104,11 @@ function pushBranch(branch: string): boolean {
 
     return true;
   }
-  const remote = up.split("/")[0];
+  const slash = up.indexOf("/");
+  const remote = up.slice(0, slash);
+  const remoteBranch = up.slice(slash + 1);
 
-  return gitInherit(["push", "--force-with-lease", remote, branch]) === 0;
+  return gitInherit(["push", "--force-with-lease", remote, `${branch}:${remoteBranch}`]) === 0;
 }
 
 type Step = { branch: string; args: string[]; display: string };

@@ -460,6 +460,100 @@ test("edge: mid-rebase in a linked worktree aborts before mutating", () => {
   expect(git(repo, "rev-parse", "bottom")).toBe(bottomBefore);
 });
 
+test("edge: co-located branches on the tip both propagate (no silent no-op)", () => {
+  const repo = initRepo();
+  git(repo, "checkout", "-b", "bottom");
+  commit(repo, "bottom.txt");
+  git(repo, "checkout", "-b", "top");
+  commit(repo, "top.txt");
+  git(repo, "branch", "top-alias"); // second name on the same tip commit
+  git(repo, "checkout", "bottom");
+  writeFileSync(join(repo, "x.txt"), "x");
+  git(repo, "add", "x.txt");
+
+  const r = amendStack(repo, ["-y"], "1\n");
+
+  expect(r.code).toBe(0);
+  // both co-located branches must now sit on the amended bottom, not the old one
+  expect(git(repo, "rev-parse", "top~1")).toBe(git(repo, "rev-parse", "bottom"));
+  expect(git(repo, "rev-parse", "top-alias~1")).toBe(git(repo, "rev-parse", "bottom"));
+});
+
+test("edge: pushes to the actual upstream branch, not a same-named ref", () => {
+  const { repo, bare } = initRepoWithOrigin();
+  git(repo, "checkout", "-b", "bottom");
+  commit(repo, "bottom.txt");
+  git(repo, "checkout", "-b", "top");
+  commit(repo, "top.txt");
+  // bottom tracks a DIFFERENTLY-named upstream
+  git(repo, "push", "origin", "bottom:renamed-bottom");
+  git(repo, "branch", "--set-upstream-to=origin/renamed-bottom", "bottom");
+  git(repo, "push", "-u", "origin", "top");
+  git(repo, "checkout", "bottom");
+  writeFileSync(join(repo, "x.txt"), "x");
+  git(repo, "add", "x.txt");
+
+  const r = amendStack(repo, ["-y"], "1\n");
+
+  expect(r.code).toBe(0);
+  // the real upstream is updated...
+  expect(git(bare, "rev-parse", "renamed-bottom")).toBe(git(repo, "rev-parse", "bottom"));
+  // ...and no spurious same-named ref was created
+  expect(() => git(bare, "rev-parse", "--verify", "bottom")).toThrow();
+});
+
+test("edge: refuses when a dependent range contains a merge commit", () => {
+  const repo = initRepo();
+  git(repo, "checkout", "-b", "bottom");
+  commit(repo, "bottom.txt");
+  git(repo, "checkout", "-b", "featA");
+  commit(repo, "a.txt");
+  git(repo, "checkout", "bottom");
+  git(repo, "checkout", "-b", "featB");
+  commit(repo, "b.txt");
+  git(repo, "merge", "--no-edit", "featA"); // featB now has a merge commit above bottom
+
+  git(repo, "checkout", "bottom");
+  const featBBefore = git(repo, "rev-parse", "featB");
+  writeFileSync(join(repo, "x.txt"), "x");
+  git(repo, "add", "x.txt");
+
+  const r = amendStack(repo, ["-y"], "1\n");
+
+  expect(r.code).toBe(1);
+  expect(r.err + r.out).toMatch(/merge/i);
+  expect(git(repo, "rev-parse", "featB")).toBe(featBBefore); // nothing mutated
+});
+
+test("edge: --dry-run shows the plan even when a linked worktree is busy", () => {
+  const repo = initRepo();
+  git(repo, "checkout", "-b", "bottom");
+  commit(repo, "bottom.txt");
+  git(repo, "checkout", "-b", "top");
+  commit(repo, "top.txt");
+  git(repo, "checkout", "bottom");
+  const wt = addWorktree(repo, "top");
+  writeFileSync(join(wt, "dirty.txt"), "dirty"); // linked worktree dirty
+
+  const r = amendStack(repo, ["--dry-run"]);
+
+  expect(r.code).toBe(0);
+  expect(r.out).toContain("git");
+  expect(r.out).toContain("rebase --autostash --onto");
+});
+
+test("edge: unborn HEAD (empty repo) is rejected clearly", () => {
+  const repo = sandbox();
+  git(repo, "init", "-b", "master");
+  git(repo, "config", "user.email", "t@t.t");
+  git(repo, "config", "user.name", "t");
+
+  const r = amendStack(repo, ["-y"], "1\n");
+
+  expect(r.code).toBe(1);
+  expect(r.err + r.out).toMatch(/no commits|nothing to amend|unborn/i);
+});
+
 test("help lists the flags", () => {
   const repo = sandbox();
   git(repo, "init", "-b", "master");

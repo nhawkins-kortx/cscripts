@@ -56,7 +56,9 @@ function dependents(oldHead: string, amendBranch: string): string[] {
 }
 
 function parentOf(branch: string, deps: string[]): string | null {
-  const cands = deps.filter((c) => c !== branch && isAncestor(c, branch));
+  // A parent must be a STRICT ancestor: co-located branches (equal commits, ancestor
+  // both ways) are siblings, not parents - treating them as parents yields a no-op rebase.
+  const cands = deps.filter((c) => c !== branch && isAncestor(c, branch) && !isAncestor(branch, c));
   for (const p of cands) {
     if (cands.every((c) => c === p || isAncestor(c, p))) return p;
   }
@@ -198,9 +200,11 @@ function pushableBranches(branches: string[]): string[] {
 function pushBranch(branch: string): boolean {
   const up = upstreamOf(branch);
   if (up === null) return true;
-  const remote = up.split("/")[0];
+  const slash = up.indexOf("/");
+  const remote = up.slice(0, slash);
+  const remoteBranch = up.slice(slash + 1);
 
-  return gitInherit(["push", "--force-with-lease", remote, branch]) === 0;
+  return gitInherit(["push", "--force-with-lease", remote, `${branch}:${remoteBranch}`]) === 0;
 }
 
 function pushPass(rewritten: string[], yes: boolean): void {
@@ -262,7 +266,9 @@ function runSteps(steps: Step[]): Result {
 function run(args: string[]): void {
   const { yes, dryRun } = parseArgs(args);
   const amendBranch = currentBranch();
-  const oldHead = git(["rev-parse", "HEAD"]).stdout;
+  const headRef = git(["rev-parse", "HEAD"]);
+  if (headRef.code !== 0) fail(`No commits on ${amendBranch} yet - nothing to amend.`);
+  const oldHead = headRef.stdout;
 
   const deps = dependents(oldHead, amendBranch);
   const ordered = topoOrder(oldHead, deps);
@@ -288,18 +294,27 @@ function run(args: string[]): void {
 
   const wts = worktrees();
   const selfPath = git(["rev-parse", "--show-toplevel"]).stdout;
-  if (midOperation(selfPath)) fail("Current worktree is mid-rebase/merge - finish or abort it first.");
-  if (!dryRun && git(["diff", "--quiet"]).code !== 0) {
-    fail("You have unstaged changes to tracked files.\namend-stack only folds in the staged index; stash or stage the rest first (otherwise a dependent rebase could drag them across branches).");
-  }
 
-  const blocked: string[] = [];
-  for (const b of selected) {
-    const busyPath = busyOccupier(b, wts, selfPath);
-    if (busyPath) blocked.push(`${b} (busy in ${busyPath} - dirty or mid-operation)`);
-  }
-  if (blocked.length > 0) {
-    fail(`\nCannot restack - these selected branches are busy in another worktree:\n  ${blocked.join("\n  ")}\n\nFinish/clean those worktrees or deselect the branches (deselecting drops their descendants).`);
+  // Preflight abort conditions. Skipped under --dry-run so the plan is always previewable.
+  if (!dryRun) {
+    if (midOperation(selfPath)) fail("Current worktree is mid-rebase/merge - finish or abort it first.");
+    if (git(["diff", "--quiet"]).code !== 0) {
+      fail("You have unstaged changes to tracked files.\namend-stack only folds in the staged index; stash or stage the rest first (otherwise a dependent rebase could drag them across branches).");
+    }
+
+    const withMerges = selected.filter((b) => git(["rev-list", "--merges", `${oldHead}..${b}`]).stdout !== "");
+    if (withMerges.length > 0) {
+      fail(`\nCannot restack - a merge commit sits above the amended commit and can't be replayed with --onto:\n  ${withMerges.join(", ")}\n\nRebase these manually (e.g. git rebase --rebase-merges) or exclude them.`);
+    }
+
+    const blocked: string[] = [];
+    for (const b of selected) {
+      const busyPath = busyOccupier(b, wts, selfPath);
+      if (busyPath) blocked.push(`${b} (busy in ${busyPath} - dirty or mid-operation)`);
+    }
+    if (blocked.length > 0) {
+      fail(`\nCannot restack - these selected branches are busy in another worktree:\n  ${blocked.join("\n  ")}\n\nFinish/clean those worktrees or deselect the branches (deselecting drops their descendants).`);
+    }
   }
 
   const steps = planSteps(amendBranch, oldHead, selected, deps, oldTip, wts, selfPath);
