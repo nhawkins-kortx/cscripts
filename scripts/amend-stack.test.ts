@@ -131,3 +131,32 @@ test("prints the staged-changes preview before running", () => {
 
   expect(r.out).toContain("staged.txt");
 });
+
+test("fan-out: base amend propagates to two stacks sharing a middle branch", () => {
+  const repo = initRepo();
+  git(repo, "checkout", "-b", "base");
+  commit(repo, "base-feature.txt");
+  git(repo, "checkout", "-b", "mid");
+  commit(repo, "mid.txt");
+  git(repo, "checkout", "-b", "leafA");
+  commit(repo, "leafA.txt");
+  git(repo, "checkout", "mid");
+  git(repo, "checkout", "-b", "leafB");
+  commit(repo, "leafB.txt");
+
+  git(repo, "checkout", "base");
+  const baseOld = git(repo, "rev-parse", "base");
+  const midOld = git(repo, "rev-parse", "mid");
+  writeFileSync(join(repo, "fix.txt"), "fix");
+  git(repo, "add", "fix.txt");
+
+  const r = amendStack(repo, ["-y"], "1\n");
+
+  expect(r.code).toBe(0);
+  expect(git(repo, "rev-parse", "base")).not.toBe(baseOld);
+  expect(git(repo, "rev-parse", "mid~1")).toBe(git(repo, "rev-parse", "base"));
+  expect(git(repo, "rev-parse", "leafA~1")).toBe(git(repo, "rev-parse", "mid"));
+  expect(git(repo, "rev-parse", "leafB~1")).toBe(git(repo, "rev-parse", "mid"));
+  expect(() => git(repo, "merge-base", "--is-ancestor", midOld, "leafA")).toThrow();
+  expect(() => git(repo, "merge-base", "--is-ancestor", midOld, "leafB")).toThrow();
+});
