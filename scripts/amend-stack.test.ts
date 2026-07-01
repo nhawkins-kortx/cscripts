@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -253,7 +253,7 @@ test("worktree locked-busy: dirty linked worktree in the set aborts before mutat
   commit(repo, "top.txt");
   git(repo, "checkout", "bottom");
   const wt = addWorktree(repo, "top");
-  writeFileSync(join(wt, "dirty.txt"), "dirty"); // linked worktree is now dirty
+  writeFileSync(join(wt, "top.txt"), "dirty-tracked-edit"); // tracked file modified in the worktree
 
   const bottomBefore = git(repo, "rev-parse", "bottom");
   writeFileSync(join(repo, "x.txt"), "x");
@@ -552,6 +552,44 @@ test("edge: unborn HEAD (empty repo) is rejected clearly", () => {
 
   expect(r.code).toBe(1);
   expect(r.err + r.out).toMatch(/no commits|nothing to amend|unborn/i);
+});
+
+test("edge: undo hint for a worktree-resident branch uses git -C, not branch -f", () => {
+  const repo = initRepo();
+  git(repo, "checkout", "-b", "bottom");
+  commit(repo, "bottom.txt");
+  git(repo, "checkout", "-b", "top");
+  commit(repo, "top.txt");
+  git(repo, "checkout", "bottom");
+  const wt = addWorktree(repo, "top"); // top lives in a linked worktree
+  writeFileSync(join(repo, "x.txt"), "x");
+  git(repo, "add", "x.txt");
+
+  const r = amendStack(repo, ["-y"], "1\n");
+
+  expect(r.code).toBe(0);
+  // undo recipe for top must target its worktree (git branch -f would fail there)
+  expect(r.out).toContain(`git -C ${realpathSync(wt)} reset --hard`);
+  expect(r.out).not.toMatch(/git branch -f top /);
+});
+
+test("edge: untracked-only files in a linked worktree do not block", () => {
+  const repo = initRepo();
+  git(repo, "checkout", "-b", "bottom");
+  commit(repo, "bottom.txt");
+  git(repo, "checkout", "-b", "top");
+  commit(repo, "top.txt");
+  git(repo, "checkout", "bottom");
+  const wt = addWorktree(repo, "top");
+  writeFileSync(join(wt, "scratch.log"), "scratch"); // untracked only, tree otherwise clean
+  writeFileSync(join(repo, "x.txt"), "x");
+  git(repo, "add", "x.txt");
+
+  const r = amendStack(repo, ["-y"], "1\n");
+
+  expect(r.code).toBe(0);
+  expect(git(repo, "rev-parse", "top~1")).toBe(git(repo, "rev-parse", "bottom"));
+  expect(git(wt, "rev-parse", "HEAD")).toBe(git(repo, "rev-parse", "top"));
 });
 
 test("help lists the flags", () => {

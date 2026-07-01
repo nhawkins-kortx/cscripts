@@ -107,7 +107,9 @@ function worktreeForBranch(branch: string, wts: Worktree[]): string | null {
 }
 
 function isClean(path: string): boolean {
-  return git(["status", "--porcelain"], path).stdout === "";
+  // Untracked files are safe: rebase --autostash never touches them. Only tracked
+  // (staged/unstaged) changes make a worktree unsafe to rebase in place.
+  return git(["status", "--porcelain", "--untracked-files=no"], path).stdout === "";
 }
 
 function midOperation(path: string): boolean {
@@ -342,13 +344,18 @@ function run(args: string[]): void {
     fail(conflictGuidance(steps[result.index], steps.slice(result.index + 1), amendBranch, oldHead));
   }
 
-  git(["checkout", amendBranch]);
+  if (git(["checkout", amendBranch]).code !== 0) {
+    console.warn(`\nWarning: could not return to ${amendBranch}; you may be left on a dependent branch.`);
+  }
 
   pushPass([amendBranch, ...selected], yes);
 
   console.log("\nDone. To undo:");
   console.log(`  git branch -f ${amendBranch} ${oldTip[amendBranch].slice(0, 9)}`);
-  for (const b of selected) console.log(`  git branch -f ${b} ${oldTip[b].slice(0, 9)}`);
+  for (const s of steps) {
+    const old = oldTip[s.branch].slice(0, 9);
+    console.log(s.cwd ? `  git -C ${s.cwd} reset --hard ${old}` : `  git branch -f ${s.branch} ${old}`);
+  }
 }
 
 const script: CScriptScript = {
