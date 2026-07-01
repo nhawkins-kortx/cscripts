@@ -10,6 +10,10 @@ function git(args: string[]): { code: number; stdout: string; stderr: string } {
   return { code: r.status ?? 1, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
 }
 
+function confirm(message: string): boolean {
+  return !(prompt(message) ?? "").trim().toLowerCase().startsWith("n");
+}
+
 function listWorktrees(): Worktree[] {
   const r = git(["worktree", "list", "--porcelain"]);
   if (r.code !== 0) {
@@ -65,8 +69,7 @@ function forceRemovePass(failed: Failure[]): void {
   console.log("\nFailed to remove the following worktrees:");
   failed.forEach((f, i) => console.log(`  ${i + 1}) ${f.path} — ${f.reason}`));
 
-  const wantForce = (prompt("\nDo you want to force remove? y/[N]:") ?? "").trim().toLowerCase();
-  if (wantForce !== "y") return;
+  if (!confirm("\nDo you want to force remove? [Y]/n:")) return;
 
   const input = (prompt("Choose the numbers you want to force remove (leave blank for 'all'):") ?? "").trim();
   const chosen = input === "" ? failed.map((_, i) => i + 1) : parseSelection(input, failed.length);
@@ -105,8 +108,7 @@ function run(): void {
   console.log("\nSelected:");
   selected.forEach((w) => console.log(`  ${w.path}  [${w.branch}]`));
 
-  const confirm = (prompt(`\nRemove these ${selected.length} worktree(s)? y/[N]:`) ?? "").trim().toLowerCase();
-  if (confirm !== "y") {
+  if (!confirm(`\nRemove these ${selected.length} worktree(s)? [Y]/n:`)) {
     console.log("Aborted.");
 
     return;

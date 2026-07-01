@@ -120,6 +120,37 @@ test("declining the offer rebases locally but leaves the remote untouched", () =
   expect(git(repo, "rev-parse", "feature~2")).toBe(git(repo, "rev-parse", "origin/master"));
 });
 
+test("an empty answer at the proceed prompt defaults to yes", () => {
+  const { repo } = buildFeature({ origin: false });
+
+  const r = rebaseStack(repo, ["master", "2"], "\n");
+
+  expect(r.code).toBe(0);
+  expect(r.out).toContain("[Y]/n");
+  expect(git(repo, "rev-parse", "feature~2")).toBe(git(repo, "rev-parse", "master"));
+});
+
+test("an 'n' answer at the proceed prompt aborts", () => {
+  const { repo } = buildFeature({ origin: false });
+  const before = git(repo, "rev-parse", "feature");
+
+  const r = rebaseStack(repo, ["master", "2"], "n\n");
+
+  expect(r.code).toBe(0);
+  expect(r.out).toContain("Aborted.");
+  expect(git(repo, "rev-parse", "feature")).toBe(before);
+});
+
+test("an empty answer at the push prompt defaults to yes", () => {
+  const { repo, bare } = buildFeature({ origin: true });
+
+  const r = rebaseStack(repo, ["origin/master", "2"], "\n\n");
+
+  expect(r.code).toBe(0);
+  expect(r.out).toContain("Pushing with --force-with-lease...");
+  expect(git(bare!, "rev-parse", "feature")).toBe(git(repo, "rev-parse", "feature"));
+});
+
 test("rejects an unknown flag", () => {
   const r = rebaseStack(sandbox(), ["origin/master", "feature", "2", "--push"]);
 

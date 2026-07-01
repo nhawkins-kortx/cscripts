@@ -18,6 +18,10 @@ function fail(message: string): never {
   process.exit(1);
 }
 
+function confirm(message: string): boolean {
+  return !(prompt(message) ?? "").trim().toLowerCase().startsWith("n");
+}
+
 function verify(ref: string): boolean {
   return git(["rev-parse", "--verify", "--quiet", ref]).code === 0;
 }
@@ -27,6 +31,11 @@ function currentBranch(): string {
   if (r.code !== 0) fail("Detached HEAD — specify the feature branch explicitly.");
 
   return r.stdout;
+}
+
+function gitRefs(): string[] {
+  return git(["for-each-ref", "--format=%(refname:short)", "refs/heads", "refs/remotes"])
+    .stdout.split("\n").map((s) => s.trim()).filter(Boolean);
 }
 
 function remoteForTarget(target: string): string | null {
@@ -121,7 +130,7 @@ function run(args: string[]): void {
   console.log(`\nDropping from under ${feature} (no longer ancestors):`);
   console.log(bullets(dropped));
 
-  if (!yes && (prompt("\nProceed? y/[N]:") ?? "").trim().toLowerCase() !== "y") {
+  if (!yes && !confirm("\nProceed? [Y]/n:")) {
     console.log("Aborted.");
 
     return;
@@ -137,7 +146,7 @@ function run(args: string[]): void {
 
   if (hasLiveRemote(feature)) {
     console.log(`\n${feature} is on a remote.`);
-    const go = yes || (prompt(`Push ${feature} with --force-with-lease? y/[N]:`) ?? "").trim().toLowerCase() === "y";
+    const go = yes || confirm(`Push ${feature} with --force-with-lease? [Y]/n:`);
     if (go) {
       console.log("\nPushing with --force-with-lease...");
       if (!pushBranch(feature)) console.warn(`Push failed for ${feature}; continuing.`);
@@ -182,6 +191,11 @@ Examples:
   cscript rebase-stack origin/master ~2
   cscript rebase-stack origin/master feature/my-branch 2 -y`,
   run,
+  complete: (args) => {
+    const positional = args.filter((a) => !a.startsWith("-"));
+
+    return positional.length <= 2 ? gitRefs() : [];
+  },
 };
 
 export default script;

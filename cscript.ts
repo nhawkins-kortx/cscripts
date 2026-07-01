@@ -10,7 +10,7 @@ const scriptsDir =
 
 function scriptNames(): string[] {
   return readdirSync(scriptsDir)
-    .filter((f) => f.endsWith(".ts"))
+    .filter((f) => f.endsWith(".ts") && !f.endsWith(".test.ts"))
     .map((f) => f.slice(0, -3))
     .sort();
 }
@@ -36,6 +36,20 @@ async function main(): Promise<void> {
 
   if (!cmd || HELP_FLAGS.has(cmd)) {
     usage();
+
+    return;
+  }
+
+  if (cmd === "__complete") {
+    const [name, ...words] = rest;
+    try {
+      if (name && scriptNames().includes(name)) {
+        const candidates = (await (await loadScript(name)).complete?.(words)) ?? [];
+        if (candidates.length > 0) console.log(candidates.join("\n"));
+      }
+    } catch {
+      // Completion runs on every Tab; a thrown error would spray into the prompt. Stay silent.
+    }
 
     return;
   }

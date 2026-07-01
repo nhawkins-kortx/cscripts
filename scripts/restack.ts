@@ -19,6 +19,10 @@ function fail(message: string): never {
   process.exit(1);
 }
 
+function confirm(message: string): boolean {
+  return !(prompt(message) ?? "").trim().toLowerCase().startsWith("n");
+}
+
 function verify(ref: string): boolean {
   return git(["rev-parse", "--verify", "--quiet", ref]).code === 0;
 }
@@ -28,6 +32,11 @@ function currentBranch(): string {
   if (r.code !== 0) fail("Detached HEAD — restack needs a branch as the top of the stack.");
 
   return r.stdout;
+}
+
+function gitRefs(): string[] {
+  return git(["for-each-ref", "--format=%(refname:short)", "refs/heads", "refs/remotes"])
+    .stdout.split("\n").map((s) => s.trim()).filter(Boolean);
 }
 
 function remoteForTarget(target: string): string | null {
@@ -142,7 +151,7 @@ function confirmPlan(target: string, plan: Plan, yes: boolean): boolean {
   console.log(`Restacking onto ${target}:\n`);
   plan.steps.forEach((s, i) => console.log(`  ${i + 1}) ${s.display}`));
 
-  return yes || (prompt("\nProceed? y/[N]:") ?? "").trim().toLowerCase() === "y";
+  return yes || confirm("\nProceed? [Y]/n:");
 }
 
 function runSteps(steps: Step[]): Result {
@@ -171,9 +180,7 @@ function finish(plan: Plan, oldTip: Record<string, string>, yes: boolean): void 
   } else {
     console.log("\nThese branches are on a remote:");
     for (const b of pushable) console.log(`  ${b}`);
-    const go =
-      yes ||
-      (prompt(`\nPush ${pushable.length} branch(es) with --force-with-lease? y/[N]:`) ?? "").trim().toLowerCase() === "y";
+    const go = yes || confirm(`\nPush ${pushable.length} branch(es) with --force-with-lease? [Y]/n:`);
     if (go) {
       console.log("\nPushing with --force-with-lease...");
       for (const b of pushable) {
@@ -298,6 +305,11 @@ Examples:
   cscript restack origin/master
   cscript restack origin/master -y`,
   run,
+  complete: (args) => {
+    const positional = args.filter((a) => !a.startsWith("-"));
+
+    return positional.length === 1 ? gitRefs() : [];
+  },
 };
 
 export default script;

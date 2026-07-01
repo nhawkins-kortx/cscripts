@@ -54,6 +54,30 @@ point them at a different directory, set `CSCRIPT_SCRIPTS_DIR`:
 (`cscript <Tab>` lists every script, `cscript <name> <Tab>` offers help
 flags). It reads `scripts/` live, so new scripts complete automatically.
 
+A script can also complete its own arguments by adding a `complete` callback to
+its exported `CScriptScript`:
+
+    complete: (args) => string[] | Promise<string[]>
+
+`args` is the words typed after the script name, up to and including the word
+being completed (the last element, possibly `""`). So `args.length` tells you
+which slot is being completed and the earlier elements give context; the shell
+prefix-filters whatever list you return. `restack` and `rebase-stack` use this
+to complete git refs for their target/feature arguments:
+
+    complete: (args) => {
+      const positional = args.filter((a) => !a.startsWith("-"));
+      return positional.length === 1 ? gitRefs() : [];
+    }
+
+The framework knows nothing about git — a callback can return file paths, enum
+values, or anything else, sync or async. The shell asks for candidates via the
+hidden `cscript __complete <name> <words...>` command, which loads the script
+and calls its `complete`. **Because Tab now imports the script, scripts must
+stay side-effect-free at module load** — define the object and helpers, but do
+no work at the top level. Errors during completion are swallowed so they never
+disturb the prompt.
+
 Add the completions dir to `fpath` **before** `compinit` runs in `~/.zshrc`:
 
     fpath=("$HOME/Git/scripts/completions" $fpath)

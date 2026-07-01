@@ -4,6 +4,7 @@ _cscript() {
   local scripts_dir=${CSCRIPT_SCRIPTS_DIR:-${${commands[cscript]}:A:h}/scripts}
   local -a names
   names=(${scripts_dir}/*.ts(N:t:r))
+  names=(${names:#*.test})
 
   if (( CURRENT == 2 )); then
     _alternative \
@@ -12,8 +13,16 @@ _cscript() {
     return
   fi
 
-  if (( CURRENT == 3 )) && (( ${names[(Ie)$words[2]]} )); then
-    _values 'help' help --help -h
+  if (( CURRENT >= 3 )) && (( ${names[(Ie)$words[2]]} )); then
+    local -a candidates
+    candidates=(${(f)"$(cscript __complete $words[2] "${(@)words[3,CURRENT]}" 2>/dev/null)"})
+    if (( CURRENT == 3 )); then
+      _alternative \
+        "arguments:argument:(${candidates})" \
+        'help:help:(help --help -h)'
+    else
+      _alternative "arguments:argument:(${candidates})"
+    fi
   fi
 }
 

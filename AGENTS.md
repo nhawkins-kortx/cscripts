@@ -29,5 +29,10 @@ never touch this repo's own git state. Clean up temp dirs in `afterEach`.
 
 - Scripts are self-contained and duplicate the small git helpers (`git`,
   `gitInherit`, `verify`, etc.) rather than sharing a module. Match that shape.
+- A script may export an optional `complete(args)` callback for tab-completion;
+  `args` runs from the first word after the script name through the word being
+  completed. The dispatcher exposes it via the hidden `cscript __complete`
+  command, which imports the script — so keep scripts side-effect-free at module
+  load (no work at the top level, only definitions).
 - No type defs / tsconfig in this repo, so a standalone `tsc` run reports
   missing `node`/`bun` globals — that noise is expected; trust `bun test`.

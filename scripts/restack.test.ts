@@ -133,6 +133,37 @@ test("declining the offer rebases locally but leaves remotes untouched", () => {
   expect(git(repo, "rev-parse", "B1~1")).toBe(git(repo, "rev-parse", "origin/master"));
 });
 
+test("an empty answer at the proceed prompt defaults to yes", () => {
+  const { repo } = buildStack({ origin: false });
+
+  const r = restack(repo, ["master"], "\n");
+
+  expect(r.code).toBe(0);
+  expect(r.out).toContain("[Y]/n");
+  expect(git(repo, "rev-parse", "B1~1")).toBe(git(repo, "rev-parse", "master"));
+});
+
+test("an 'n' answer at the proceed prompt aborts", () => {
+  const { repo } = buildStack({ origin: false });
+  const before = git(repo, "rev-parse", "B1");
+
+  const r = restack(repo, ["master"], "n\n");
+
+  expect(r.code).toBe(0);
+  expect(r.out).toContain("Aborted.");
+  expect(git(repo, "rev-parse", "B1")).toBe(before);
+});
+
+test("an empty answer at the push prompt defaults to yes", () => {
+  const { repo, bare } = buildStack({ origin: true });
+
+  const r = restack(repo, ["origin/master"], "\n\n");
+
+  expect(r.code).toBe(0);
+  expect(r.out).toContain("Pushing with --force-with-lease...");
+  expect(git(bare!, "rev-parse", "B1")).toBe(git(repo, "rev-parse", "B1"));
+});
+
 test("rejects an unknown flag", () => {
   const repo = sandbox();
 
