@@ -41,6 +41,13 @@ function commit(cwd: string, file: string, content = file): void {
   git(cwd, "commit", "-m", `add ${file}`);
 }
 
+function addWorktree(repo: string, branch: string): string {
+  const wt = sandbox();
+  git(repo, "worktree", "add", wt, branch);
+
+  return wt;
+}
+
 function initRepo(): string {
   const repo = sandbox();
   git(repo, "init", "-b", "master");
@@ -207,4 +214,44 @@ test("selection: picking a child auto-includes its ancestor and reports the rest
   expect(r.out.toLowerCase()).toContain("stale");
   expect(git(repo, "rev-parse", "mid~1")).toBe(git(repo, "rev-parse", "bottom"));
   expect(git(repo, "rev-parse", "top~1")).toBe(git(repo, "rev-parse", "mid"));
+});
+
+test("worktree locked-clean: rebases the dependent in its own worktree", () => {
+  const repo = initRepo();
+  git(repo, "checkout", "-b", "bottom");
+  commit(repo, "bottom.txt");
+  git(repo, "checkout", "-b", "top");
+  commit(repo, "top.txt");
+  git(repo, "checkout", "bottom");
+  const wt = addWorktree(repo, "top"); // "top" now checked out in a second, clean worktree
+
+  writeFileSync(join(repo, "x.txt"), "x");
+  git(repo, "add", "x.txt");
+
+  const r = amendStack(repo, ["-y"], "1\n");
+
+  expect(r.code).toBe(0);
+  expect(git(repo, "rev-parse", "top~1")).toBe(git(repo, "rev-parse", "bottom"));
+  expect(git(wt, "rev-parse", "HEAD")).toBe(git(repo, "rev-parse", "top"));
+});
+
+test("worktree locked-busy: dirty linked worktree in the set aborts before mutating", () => {
+  const repo = initRepo();
+  git(repo, "checkout", "-b", "bottom");
+  commit(repo, "bottom.txt");
+  git(repo, "checkout", "-b", "top");
+  commit(repo, "top.txt");
+  git(repo, "checkout", "bottom");
+  const wt = addWorktree(repo, "top");
+  writeFileSync(join(wt, "dirty.txt"), "dirty"); // linked worktree is now dirty
+
+  const bottomBefore = git(repo, "rev-parse", "bottom");
+  writeFileSync(join(repo, "x.txt"), "x");
+  git(repo, "add", "x.txt");
+
+  const r = amendStack(repo, ["-y"], "1\n");
+
+  expect(r.code).toBe(1);
+  expect(r.err + r.out).toMatch(/top.*(dirty|in another worktree|checked out|worktree)/i);
+  expect(git(repo, "rev-parse", "bottom")).toBe(bottomBefore);
 });

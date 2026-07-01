@@ -1,4 +1,6 @@
 import { spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import type { CScriptScript } from "../types";
 
 type Git = { code: number; stdout: string; stderr: string };
@@ -85,19 +87,51 @@ function closeUnderAncestry(selected: string[], deps: string[]): Set<string> {
   return set;
 }
 
+type Worktree = { path: string; branch: string | null };
+
+function worktrees(): Worktree[] {
+  return git(["worktree", "list", "--porcelain"]).stdout
+    .split("\n\n").map((b) => b.split("\n")).map((lines) => {
+      const path = lines.find((l) => l.startsWith("worktree "))?.slice("worktree ".length) ?? "";
+      const bl = lines.find((l) => l.startsWith("branch "));
+      const branch = bl ? bl.slice("branch ".length).replace("refs/heads/", "") : null;
+
+      return { path, branch };
+    }).filter((w) => w.path !== "");
+}
+
+function worktreeForBranch(branch: string, wts: Worktree[]): string | null {
+  return wts.find((w) => w.branch === branch)?.path ?? null;
+}
+
+function isClean(path: string): boolean {
+  return git(["status", "--porcelain"], path).stdout === "";
+}
+
+function midOperation(path: string): boolean {
+  const gitDir = git(["rev-parse", "--absolute-git-dir"], path).stdout;
+
+  return ["rebase-merge", "rebase-apply", "MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD"]
+    .some((m) => existsSync(join(gitDir, m)));
+}
+
 type Step = { branch: string; onto: string; cut: string; cwd?: string; display: string };
 
-function planSteps(amendBranch: string, oldHead: string, ordered: string[], deps: string[], oldTip: Record<string, string>): Step[] {
+function planSteps(amendBranch: string, oldHead: string, ordered: string[], deps: string[], oldTip: Record<string, string>, wts: Worktree[], selfPath: string): Step[] {
   return ordered.map((branch) => {
     const parent = parentOf(branch, deps);
     const onto = parent ?? amendBranch;
     const cut = parent ? oldTip[parent] : oldHead;
+    const wtPath = worktreeForBranch(branch, wts);
+    const cwd = wtPath && wtPath !== selfPath ? wtPath : undefined;
+    const where = cwd ? ` (in ${cwd})` : "";
 
     return {
       branch,
       onto,
       cut,
-      display: `git rebase --autostash --onto ${onto} ${cut.slice(0, 9)} ${branch}`,
+      cwd,
+      display: `git ${cwd ? `-C ${cwd} ` : ""}rebase --autostash --onto ${onto} ${cut.slice(0, 9)} ${branch}${where}`,
     };
   });
 }
@@ -159,7 +193,22 @@ function run(args: string[]): void {
     }
   }
 
-  const steps = planSteps(amendBranch, oldHead, selected, deps, oldTip);
+  const wts = worktrees();
+  const selfPath = git(["rev-parse", "--show-toplevel"]).stdout;
+  if (midOperation(selfPath)) fail("Current worktree is mid-rebase/merge - finish or abort it first.");
+
+  const blocked: string[] = [];
+  for (const b of selected) {
+    const wtPath = worktreeForBranch(b, wts);
+    if (wtPath && wtPath !== selfPath && (!isClean(wtPath) || midOperation(wtPath))) {
+      blocked.push(`${b} (checked out in ${wtPath} - dirty or mid-operation)`);
+    }
+  }
+  if (blocked.length > 0) {
+    fail(`\nCannot restack - these selected branches are busy in another worktree:\n  ${blocked.join("\n  ")}\n\nFinish/clean those worktrees or deselect the branches (deselecting drops their descendants).`);
+  }
+
+  const steps = planSteps(amendBranch, oldHead, selected, deps, oldTip, wts, selfPath);
 
   const preview = stagedPreview();
   console.log(preview === "" ? "\n(no staged changes - message-only amend)" : `\nStaged changes:\n${preview}`);
