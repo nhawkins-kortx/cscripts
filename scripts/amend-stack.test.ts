@@ -113,7 +113,7 @@ test("message-only amend: empty index, message rewritten, tree unchanged", () =>
   commit(repo, "top.txt");
   git(repo, "checkout", "bottom");
 
-  const r = amendStack(repo, [], "\n2\nreworded bottom\n"); // confirm, edit message
+  const r = amendStack(repo, [], "\n\n2\nreworded bottom\n"); // select all, confirm, edit message
 
   expect(r.code).toBe(0);
   expect(git(repo, "rev-parse", "bottom^{tree}")).toBe(treeBefore);
@@ -180,4 +180,31 @@ test("dry-run: prints the plan and moves no refs", () => {
   expect(r.out).toContain("git rebase --autostash --onto");
   expect(git(repo, "rev-parse", "bottom")).toBe(bottomBefore);
   expect(git(repo, "rev-parse", "top")).toBe(topBefore);
+});
+
+test("selection: picking a child auto-includes its ancestor and reports the rest stale", () => {
+  const repo = initRepo();
+  git(repo, "checkout", "-b", "bottom");
+  commit(repo, "bottom.txt");
+  git(repo, "checkout", "-b", "mid");
+  commit(repo, "mid.txt");
+  git(repo, "checkout", "-b", "top");
+  commit(repo, "top.txt");
+  git(repo, "checkout", "mid");
+  git(repo, "checkout", "-b", "side");
+  commit(repo, "side.txt");
+
+  git(repo, "checkout", "bottom");
+  const sideOld = git(repo, "rev-parse", "side");
+  writeFileSync(join(repo, "x.txt"), "x");
+  git(repo, "add", "x.txt");
+
+  // menu (verified): 1) mid  2) side  3) top -> pick "3" (top); mid auto-included, side left stale.
+  const r = amendStack(repo, [], "3\n\n1\n"); // select top, confirm, keep-message
+
+  expect(r.code).toBe(0);
+  expect(git(repo, "rev-parse", "side")).toBe(sideOld);
+  expect(r.out.toLowerCase()).toContain("stale");
+  expect(git(repo, "rev-parse", "mid~1")).toBe(git(repo, "rev-parse", "bottom"));
+  expect(git(repo, "rev-parse", "top~1")).toBe(git(repo, "rev-parse", "mid"));
 });

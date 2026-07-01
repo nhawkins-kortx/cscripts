@@ -66,7 +66,23 @@ function topoOrder(oldHead: string, deps: string[]): string[] {
   const rank = (b: string): number =>
     Number(git(["rev-list", "--count", `${oldHead}..${b}`]).stdout);
 
-  return [...deps].sort((a, b) => rank(a) - rank(b));
+  return [...deps].sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
+}
+
+function parseSelection(input: string, max: number): number[] | null {
+  const nums = input.split(",").map((s) => s.trim()).filter(Boolean).map(Number);
+  if (nums.some((n) => !Number.isInteger(n) || n < 1 || n > max)) return null;
+
+  return [...new Set(nums)];
+}
+
+function closeUnderAncestry(selected: string[], deps: string[]): Set<string> {
+  const set = new Set(selected);
+  for (const b of selected) {
+    for (const c of deps) if (c !== b && isAncestor(c, b)) set.add(c);
+  }
+
+  return set;
 }
 
 type Step = { branch: string; onto: string; cut: string; cwd?: string; display: string };
@@ -126,7 +142,24 @@ function run(args: string[]): void {
   const oldTip: Record<string, string> = { [amendBranch]: oldHead };
   for (const b of deps) oldTip[b] = git(["rev-parse", b]).stdout;
 
-  const steps = planSteps(amendBranch, oldHead, ordered, deps, oldTip);
+  let selected = ordered;
+  if (!yes && !dryRun && ordered.length > 0) {
+    console.log("\nDependent branches (bottom -> top):");
+    ordered.forEach((b, i) => console.log(`  ${i + 1}) ${b}`));
+    const input = (prompt("\nRestack which? (numbers, comma-separated; blank = all):") ?? "").trim();
+    if (input !== "") {
+      const picked = parseSelection(input, ordered.length);
+      if (!picked || picked.length === 0) fail("Invalid selection.");
+      const closed = closeUnderAncestry(picked.map((n) => ordered[n - 1]), ordered);
+      selected = ordered.filter((b) => closed.has(b));
+      const stale = ordered.filter((b) => !closed.has(b));
+      if (stale.length > 0) {
+        console.log(`\nLeft stale (still on the old base - restack later): ${stale.join(", ")}`);
+      }
+    }
+  }
+
+  const steps = planSteps(amendBranch, oldHead, selected, deps, oldTip);
 
   const preview = stagedPreview();
   console.log(preview === "" ? "\n(no staged changes - message-only amend)" : `\nStaged changes:\n${preview}`);
@@ -153,7 +186,7 @@ function run(args: string[]): void {
 
   console.log("\nDone. To undo:");
   console.log(`  git branch -f ${amendBranch} ${oldTip[amendBranch].slice(0, 9)}`);
-  for (const b of ordered) console.log(`  git branch -f ${b} ${oldTip[b].slice(0, 9)}`);
+  for (const b of selected) console.log(`  git branch -f ${b} ${oldTip[b].slice(0, 9)}`);
 }
 
 const script: CScriptScript = {
