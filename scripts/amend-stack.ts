@@ -117,7 +117,7 @@ function runSteps(steps: Step[]): Result {
 }
 
 function run(args: string[]): void {
-  const { yes } = parseArgs(args);
+  const { yes, dryRun } = parseArgs(args);
   const amendBranch = currentBranch();
   const oldHead = git(["rev-parse", "HEAD"]).stdout;
 
@@ -133,6 +133,11 @@ function run(args: string[]): void {
   console.log(`\nAmend ${amendBranch} (${oldHead.slice(0, 9)}) with staged changes.`);
   console.log("Then restack:");
   steps.forEach((s, i) => console.log(`  ${i + 1}) ${s.display}`));
+  if (dryRun) {
+    console.log("\nDry run - nothing changed.");
+
+    return;
+  }
   if (!(yes || confirm("\nProceed? [Y]/n:"))) {
     console.log("Aborted.");
 

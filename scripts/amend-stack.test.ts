@@ -160,3 +160,24 @@ test("fan-out: base amend propagates to two stacks sharing a middle branch", () 
   expect(() => git(repo, "merge-base", "--is-ancestor", midOld, "leafA")).toThrow();
   expect(() => git(repo, "merge-base", "--is-ancestor", midOld, "leafB")).toThrow();
 });
+
+test("dry-run: prints the plan and moves no refs", () => {
+  const repo = initRepo();
+  git(repo, "checkout", "-b", "bottom");
+  commit(repo, "bottom.txt");
+  git(repo, "checkout", "-b", "top");
+  commit(repo, "top.txt");
+  git(repo, "checkout", "bottom");
+  writeFileSync(join(repo, "x.txt"), "x");
+  git(repo, "add", "x.txt");
+
+  const bottomBefore = git(repo, "rev-parse", "bottom");
+  const topBefore = git(repo, "rev-parse", "top");
+
+  const r = amendStack(repo, ["--dry-run"]);
+
+  expect(r.code).toBe(0);
+  expect(r.out).toContain("git rebase --autostash --onto");
+  expect(git(repo, "rev-parse", "bottom")).toBe(bottomBefore);
+  expect(git(repo, "rev-parse", "top")).toBe(topBefore);
+});
