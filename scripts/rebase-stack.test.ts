@@ -1,4 +1,7 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, setDefaultTimeout, test } from "bun:test";
+
+// Subprocess-heavy git integration tests brush past Bun's 5s default under load.
+setDefaultTimeout(30_000);
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

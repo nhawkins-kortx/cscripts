@@ -69,18 +69,31 @@ function inferChain(target: string, top: string): string[] {
   return chain;
 }
 
-type Parsed = { target: string; yes: boolean };
+type Parsed = { target: string; count: number | null; yes: boolean };
 
 function parseArgs(args: string[]): Parsed {
   let yes = false;
   const positional: string[] = [];
   for (const a of args) {
     if (a === "-y" || a === "--yes") yes = true;
+    else if (a.startsWith("-")) fail(`Unknown flag: ${a}\nUsage: cscript restack <target> [count] [-y|--yes]`);
     else positional.push(a);
   }
-  if (positional.length !== 1) fail("Usage: cscript restack <target> [-y]");
+  if (positional.length < 1 || positional.length > 2) {
+    fail("Usage: cscript restack <target> [count] [-y|--yes]");
+  }
 
-  return { target: positional[0], yes };
+  let count: number | null = null;
+  if (positional.length === 2) {
+    const raw = positional[1];
+    const n = Number(raw.replace(/^~/, ""));
+    if (!Number.isInteger(n) || n < 1) {
+      fail(`Invalid count: '${raw}' (expected a positive integer, optionally prefixed with '~').`);
+    }
+    count = n;
+  }
+
+  return { target: positional[0], count, yes };
 }
 
 function upstreamOf(branch: string): string | null {
@@ -111,6 +124,7 @@ function pushBranch(branch: string): boolean {
   return gitInherit(["push", "--force-with-lease", remote, `${branch}:${remoteBranch}`]) === 0;
 }
 
+type Onto = { args: string[]; display: string };
 type Step = { branch: string; args: string[]; display: string };
 type Plan = { used: string[]; steps: Step[] };
 type Result = { ok: boolean; index: number };
@@ -119,15 +133,32 @@ function isAncestor(ancestor: string, descendant: string): boolean {
   return git(["merge-base", "--is-ancestor", ancestor, descendant]).code === 0;
 }
 
-function planSteps(target: string, chain: string[], oldTip: Record<string, string>, merged: string | null): Plan {
+function bottomOnto(target: string, branch: string, cutTip: string | null, count: number | null): Onto {
+  if (cutTip) return { args: ["--onto", target, cutTip], display: `--onto ${target} ${cutTip.slice(0, 9)}` };
+  if (count !== null) {
+    const cut = `${branch}~${count}`;
+
+    return { args: ["--onto", target, cut], display: `--onto ${target} ${cut}` };
+  }
+
+  return { args: [target], display: `${target}` };
+}
+
+function planSteps(
+  target: string,
+  chain: string[],
+  oldTip: Record<string, string>,
+  merged: string | null,
+  count: number | null,
+): Plan {
   const cutTip = merged ? git(["rev-parse", merged]).stdout : null;
   const used = merged ? chain.filter((b) => b !== merged && isAncestor(merged, b)) : chain;
 
+  // count is a first-plan concept: on a squash-merge re-plan the bottom is cut at the merged tip instead.
+  const bottomCount = merged === null ? count : null;
   const steps = used.map((branch, i) => {
     if (i === 0) {
-      const onto = cutTip
-        ? { args: ["--onto", target, cutTip], display: `--onto ${target} ${cutTip.slice(0, 9)}` }
-        : { args: [target], display: `${target}` };
+      const onto = bottomOnto(target, branch, cutTip, bottomCount);
 
       return {
         branch,
@@ -148,10 +179,14 @@ function planSteps(target: string, chain: string[], oldTip: Record<string, strin
   return { used, steps };
 }
 
-function confirmPlan(target: string, plan: Plan, yes: boolean): boolean {
+function confirmPlan(target: string, plan: Plan, dropped: string, yes: boolean): boolean {
   console.log(`\nStack (bottom → top): ${plan.used.join(" → ")}`);
   console.log(`Restacking onto ${target}:\n`);
   plan.steps.forEach((s, i) => console.log(`  ${i + 1}) ${s.display}`));
+  if (dropped) {
+    console.log(`\nDropping from under ${plan.used[0]} (stale, no longer ancestors):`);
+    console.log(dropped.split("\n").map((l) => `  ${l}`).join("\n"));
+  }
 
   return yes || confirm("\nProceed? [Y]/n:");
 }
@@ -195,8 +230,28 @@ function finish(plan: Plan, oldTip: Record<string, string>, yes: boolean): void 
   for (const b of plan.used) console.log(`  git branch -f ${b} ${oldTip[b].slice(0, 9)}`);
 }
 
+// Validates the count cut, warns if it drops nothing (the stray-bottom signature),
+// and returns the commits being dropped from under the bottom branch for the preview.
+function resolveCountDrop(target: string, bottom: string, count: number | null): string {
+  if (count === null) return "";
+  const cut = `${bottom}~${count}`;
+  if (!verify(cut)) {
+    fail(`${bottom} has fewer than ${count} commit(s) above its root; cannot resolve ${cut}.`);
+  }
+  const dropped = git(["log", "--oneline", `${target}..${cut}`]).stdout;
+  if (dropped === "") {
+    console.warn(
+      `\nWarning: nothing below ${cut} would be dropped, so the count is a no-op cut.` +
+        `\nIs ${bottom} really the bottom of your stack, and was ${target} rewritten?` +
+        `\n(A stray branch on a stale commit can shift the inferred bottom below your feature branch.)`,
+    );
+  }
+
+  return dropped;
+}
+
 function run(args: string[]): void {
-  const { target, yes } = parseArgs(args);
+  const { target, count, yes } = parseArgs(args);
   const top = currentBranch();
 
   const remote = remoteForTarget(target);
@@ -210,8 +265,10 @@ function run(args: string[]): void {
   const oldTip: Record<string, string> = {};
   for (const b of chain) oldTip[b] = git(["rev-parse", b]).stdout;
 
-  let plan = planSteps(target, chain, oldTip, null);
-  if (!confirmPlan(target, plan, yes)) {
+  const dropped = resolveCountDrop(target, chain[0], count);
+
+  let plan = planSteps(target, chain, oldTip, null, count);
+  if (!confirmPlan(target, plan, dropped, yes)) {
     console.log("Aborted.");
 
     return;
@@ -235,12 +292,12 @@ function run(args: string[]): void {
     gitInherit(["rebase", "--abort"]);
     for (let j = 0; j < result.index; j++) git(["branch", "-f", plan.steps[j].branch, oldTip[plan.steps[j].branch]]);
 
-    plan = planSteps(target, chain, oldTip, merged);
+    plan = planSteps(target, chain, oldTip, merged, count);
     if (plan.used.length === 0) {
       git(["checkout", top]);
       fail(`Nothing above ${merged} to restack.`);
     }
-    if (!confirmPlan(target, plan, yes)) {
+    if (!confirmPlan(target, plan, "", yes)) {
       git(["checkout", top]);
       console.log("Aborted.");
 
@@ -262,7 +319,7 @@ function run(args: string[]): void {
 
 const script: CScriptScript = {
   description: "Restack a whole stacked-PR chain onto a new base (current branch = top of stack).",
-  help: `Usage: cscript restack <target> [-y|--yes]
+  help: `Usage: cscript restack <target> [count] [-y|--yes]
 
 Restacks the chain of stacked branches leading up to the current branch onto
 <target>, rebasing each branch bottom-up onto its parent's new tip.
@@ -270,6 +327,16 @@ Restacks the chain of stacked branches leading up to the current branch onto
 The chain is inferred from topology: walking <target>..HEAD, any local branch
 pointing at a commit on that line is part of the stack, in order. The current
 branch is the top.
+
+[count] is the number of commits the bottom branch of the chain owns. Accepts
+N or ~N. Omitting it keeps today's behavior (the bottom branch is cut at its
+merge-base with <target>). Supply it when <target> was rewritten (rebased or
+amended) rather than merely advanced: the old fork point is no longer an
+ancestor of <target>, so the merge-base cut would try to replay the stale base
+commits and conflict. With a count, the bottom branch is instead cut at
+<bottom>~<count>, dropping the stale commits below and replaying only the
+branch's own <count> commits. Everything above rides up on the new tips as
+usual.
 
 Equivalent to, for chain B1 → B2 → ... → Bn (= current branch):
 
@@ -305,7 +372,8 @@ Options:
 
 Examples:
   cscript restack origin/master
-  cscript restack origin/master -y`,
+  cscript restack origin/master -y
+  cscript restack feature/base 1   # feature/base was rewritten; drop its stale commits`,
   run,
   complete: (args) => {
     const positional = args.filter((a) => !a.startsWith("-"));
